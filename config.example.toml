@@ -1,0 +1,26 @@
+[qdrant]
+url = "http://localhost:6334"
+collection = "prompt_improver"
+seed = true
+
+[redis]
+url = "redis://127.0.0.1/"
+key_prefix = "prompt-improver"
+
+[llm]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+temperature = 0.2
+max_tokens = 512
+
+[retrieval]
+positive_limit = 2
+negative_limit = 2
+discovery_limit = 2
+
+[prompts]
+system_path = "prompts/agents/prompt-improver-system.md"
+template_path = "prompts/templates/candidate-request.md"
+
+[logging]
+level = "info"
