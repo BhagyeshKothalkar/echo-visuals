@@ -1,7 +1,13 @@
 use agentic_prompt_improver::{
-    agent::Agent, config::Config, domain::FeedbackGrade, harness::Harness, llm::RigOpenAiProvider,
-    ports::PromptRepository, prompts::PromptAssets, qdrant::QdrantPromptRepository,
-    redis_store::RedisFeedbackStore,
+    agent::Agent,
+    config::Config,
+    domain::FeedbackGrade,
+    harness::Harness,
+    llm::RigOpenAiProvider,
+    ports::ToolRegistry,
+    prompts::PromptAssets,
+    qdrant::{DiscoverPromptsTool, InsertPromptTool, QdrantPromptRepository},
+    redis_store::{RecordFeedbackTool, RedisFeedbackStore, TopFeedbackExamplesTool},
 };
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, sync::Arc};
@@ -31,23 +37,28 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     tracing_subscriber::fmt().with_env_filter("info").init();
     let config = Config::from_sources(Some(&cli.config))?;
-    let repo = Arc::new(QdrantPromptRepository::new(&config.qdrant));
-    let feedback = Arc::new(RedisFeedbackStore::new(&config.redis).await?);
+    let qdrant = Arc::new(QdrantPromptRepository::new(&config.qdrant));
+    let redis = Arc::new(RedisFeedbackStore::new(&config.redis).await?);
     if matches!(cli.command, Command::Init) {
-        repo.initialize().await?;
+        qdrant.initialize().await?;
         println!("initialized {}", config.qdrant.collection);
         return Ok(());
     }
-    repo.initialize().await?;
+    qdrant.initialize().await?;
     let assets = PromptAssets::load(&config.prompts)?;
     let llm = Arc::new(RigOpenAiProvider::new(config.llm.clone(), assets.clone())?);
+    let tools = Arc::new(ToolRegistry::new(vec![
+        Arc::new(DiscoverPromptsTool(qdrant.clone())),
+        Arc::new(InsertPromptTool(qdrant)),
+        Arc::new(TopFeedbackExamplesTool(redis.clone())),
+        Arc::new(RecordFeedbackTool(redis)),
+    ])?);
     let agent = Agent::new(
         match &cli.command {
             Command::Run { target } | Command::Interactive { target } => target.clone(),
             Command::Init => unreachable!(),
         },
-        repo,
-        feedback,
+        tools,
         llm,
         assets,
     );

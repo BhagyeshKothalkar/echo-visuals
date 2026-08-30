@@ -1,7 +1,7 @@
 use crate::{
     config::QdrantConfig,
     domain::{stable_prompt_id, PromptDiscovery, PromptRecord},
-    ports::{PromptRepository, StorageError},
+    ports::{StorageError, Tool, ToolError},
     ranking,
 };
 use reqwest::Client;
@@ -43,9 +43,8 @@ impl QdrantPromptRepository {
         Ok(body)
     }
 }
-#[async_trait::async_trait]
-impl PromptRepository for QdrantPromptRepository {
-    async fn initialize(&self) -> Result<(), StorageError> {
+impl QdrantPromptRepository {
+    pub async fn initialize(&self) -> Result<(), StorageError> {
         let get = self
             .client
             .get(self.url(&format!("collections/{}", self.collection)))
@@ -71,7 +70,7 @@ impl PromptRepository for QdrantPromptRepository {
         }
         Ok(())
     }
-    async fn insert_prompt(&self, text: &str) -> Result<PromptRecord, StorageError> {
+    pub async fn insert_prompt(&self, text: &str) -> Result<PromptRecord, StorageError> {
         let record = PromptRecord {
             id: stable_prompt_id(text),
             text: text.trim().into(),
@@ -79,7 +78,7 @@ impl PromptRepository for QdrantPromptRepository {
         self.request(self.client.put(self.url(&format!("collections/{}/points",self.collection))).json(&json!({"points":[{"id":record.id,"vector":[0.0],"payload":{"prompt_text":record.text,"prompt_kind":"candidate"}}]}))).await?;
         Ok(record)
     }
-    async fn discover(
+    pub async fn discover(
         &self,
         query: &str,
         limit: usize,
@@ -102,5 +101,62 @@ impl PromptRepository for QdrantPromptRepository {
             })
             .collect::<Vec<_>>();
         Ok(ranking::rank(query, records, limit))
+    }
+}
+
+pub struct DiscoverPromptsTool(pub std::sync::Arc<QdrantPromptRepository>);
+
+#[async_trait::async_trait]
+impl Tool for DiscoverPromptsTool {
+    fn name(&self) -> &'static str {
+        "discover_prompts"
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            query: String,
+            limit: usize,
+        }
+        let request: Request =
+            serde_json::from_value(input).map_err(|source| ToolError::InvalidInput {
+                tool: self.name().into(),
+                source,
+            })?;
+        serde_json::to_value(
+            self.0
+                .discover(&request.query, request.limit)
+                .await
+                .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))?,
+        )
+        .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))
+    }
+}
+
+pub struct InsertPromptTool(pub std::sync::Arc<QdrantPromptRepository>);
+
+#[async_trait::async_trait]
+impl Tool for InsertPromptTool {
+    fn name(&self) -> &'static str {
+        "insert_prompt"
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            text: String,
+        }
+        let request: Request =
+            serde_json::from_value(input).map_err(|source| ToolError::InvalidInput {
+                tool: self.name().into(),
+                source,
+            })?;
+        serde_json::to_value(
+            self.0
+                .insert_prompt(&request.text)
+                .await
+                .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))?,
+        )
+        .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))
     }
 }

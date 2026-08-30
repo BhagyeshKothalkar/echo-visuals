@@ -1,3 +1,5 @@
 target/
 config.toml
 .env
+# docs are a future feature
+docs/*

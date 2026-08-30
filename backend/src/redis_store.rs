@@ -1,7 +1,7 @@
 use crate::{
     config::RedisConfig,
     domain::{CandidatePrompt, FeedbackExample, FeedbackGrade},
-    ports::{FeedbackStore, StorageError},
+    ports::{StorageError, Tool, ToolError},
 };
 use redis::{aio::ConnectionManager, AsyncCommands};
 pub struct RedisFeedbackStore {
@@ -35,9 +35,8 @@ impl RedisFeedbackStore {
         format!("{}:item:{}", self.prefix, id)
     }
 }
-#[async_trait::async_trait]
-impl FeedbackStore for RedisFeedbackStore {
-    async fn record_feedback(
+impl RedisFeedbackStore {
+    pub async fn record_feedback(
         &self,
         candidate: &CandidatePrompt,
         grade: FeedbackGrade,
@@ -65,7 +64,7 @@ impl FeedbackStore for RedisFeedbackStore {
             .map_err(|e| StorageError::Backend(anyhow::Error::new(e)))?;
         Ok(())
     }
-    async fn top_examples(
+    pub async fn top_examples(
         &self,
         grade: FeedbackGrade,
         limit: usize,
@@ -92,5 +91,68 @@ impl FeedbackStore for RedisFeedbackStore {
             }
         }
         Ok(out)
+    }
+}
+
+pub struct TopFeedbackExamplesTool(pub std::sync::Arc<RedisFeedbackStore>);
+
+#[async_trait::async_trait]
+impl Tool for TopFeedbackExamplesTool {
+    fn name(&self) -> &'static str {
+        "top_feedback_examples"
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            grade: FeedbackGrade,
+            limit: usize,
+        }
+        let request: Request =
+            serde_json::from_value(input).map_err(|source| ToolError::InvalidInput {
+                tool: self.name().into(),
+                source,
+            })?;
+        serde_json::to_value(
+            self.0
+                .top_examples(request.grade, request.limit)
+                .await
+                .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))?,
+        )
+        .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))
+    }
+}
+
+pub struct RecordFeedbackTool(pub std::sync::Arc<RedisFeedbackStore>);
+
+#[async_trait::async_trait]
+impl Tool for RecordFeedbackTool {
+    fn name(&self) -> &'static str {
+        "record_feedback"
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            id: uuid::Uuid,
+            text: String,
+            grade: FeedbackGrade,
+        }
+        let request: Request =
+            serde_json::from_value(input).map_err(|source| ToolError::InvalidInput {
+                tool: self.name().into(),
+                source,
+            })?;
+        let candidate = CandidatePrompt {
+            record: crate::domain::PromptRecord {
+                id: request.id,
+                text: request.text,
+            },
+        };
+        self.0
+            .record_feedback(&candidate, request.grade)
+            .await
+            .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))?;
+        Ok(serde_json::json!({}))
     }
 }
