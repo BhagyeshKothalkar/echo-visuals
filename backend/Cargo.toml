@@ -12,6 +12,7 @@ qdrant-client = "1.15"
 reqwest = { version = "0.13", features = ["json", "rustls"] }
 redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 rig-core = "0.42"
+rig-agent = "0.42"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

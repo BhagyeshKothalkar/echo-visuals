@@ -1,7 +1,7 @@
 use crate::{
     config::RetrievalConfig,
     domain::{CandidatePrompt, FeedbackGrade},
-    ports::{LlmError, LlmProvider, ToolError, ToolRegistry},
+    ports::{GenerationResult, LlmError, LlmProvider, ToolError, ToolRegistry},
     prompts::{PromptAssets, PromptContext},
 };
 use std::sync::Arc;
@@ -34,29 +34,18 @@ impl Agent {
             assets,
         }
     }
-    pub async fn iterate(&self, limits: &RetrievalConfig) -> Result<CandidatePrompt, AgentError> {
-        let positive = self
-            .top_examples(FeedbackGrade::Positive, limits.positive_limit)
-            .await?;
-        let negative = self
-            .top_examples(FeedbackGrade::Negative, limits.negative_limit)
-            .await?;
-        let discoveries = self.discover(limits.discovery_limit).await?;
+    pub async fn iterate(&self, _: &RetrievalConfig) -> Result<GenerationResult, AgentError> {
         let context = PromptContext {
             target: self.target.clone(),
-            positive,
-            negative,
-            discoveries,
+            positive: vec![],
+            negative: vec![],
+            discoveries: vec![],
         };
         let rendered = self.assets.render(&context);
-        let text = self.llm.generate(&rendered, &context).await?;
-        let record = serde_json::from_value(
-            self.tools
-                .call("insert_prompt", serde_json::json!({"text": text}))
-                .await?,
-        )
-        .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))?;
-        Ok(CandidatePrompt { record })
+        Ok(self
+            .llm
+            .generate(&rendered, &context, self.tools.clone())
+            .await?)
     }
     pub async fn grade(
         &self,
@@ -76,36 +65,13 @@ impl Agent {
         Ok(())
     }
 
-    async fn top_examples(
-        &self,
-        grade: FeedbackGrade,
-        limit: usize,
-    ) -> Result<Vec<crate::domain::FeedbackExample>, AgentError> {
+    pub async fn save_skill(&self, text: &str) -> Result<crate::domain::PromptRecord, AgentError> {
         serde_json::from_value(
             self.tools
-                .call(
-                    "top_feedback_examples",
-                    serde_json::json!({"grade": grade, "limit": limit}),
-                )
+                .call("save_skill", serde_json::json!({"text": text}))
                 .await?,
         )
-        .map_err(|e| ToolError::Execution(anyhow::Error::new(e)).into())
-    }
-
-    async fn discover(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<crate::domain::PromptDiscovery>, AgentError> {
-        let discoveries: Vec<crate::domain::PromptDiscovery> = serde_json::from_value(
-            self.tools
-                .call(
-                    "discover_prompts",
-                    serde_json::json!({"query": self.target, "limit": limit}),
-                )
-                .await?,
-        )
-        .map_err(|e| ToolError::Execution(anyhow::Error::new(e)))?;
-        Ok(discoveries)
+        .map_err(|e| crate::ports::ToolError::Execution(anyhow::Error::new(e)).into())
     }
 }
 
@@ -113,7 +79,7 @@ impl Agent {
 mod tests {
     use super::*;
     use crate::{
-        domain::{stable_prompt_id, FeedbackExample, PromptDiscovery, PromptRecord},
+        domain::{stable_prompt_id, PromptRecord},
         ports::*,
         prompts::RenderedPrompt,
     };
@@ -141,8 +107,12 @@ mod tests {
             &self,
             _: &RenderedPrompt,
             _: &PromptContext,
-        ) -> Result<String, LlmError> {
-            Ok("candidate".into())
+            _: Arc<ToolRegistry>,
+        ) -> Result<GenerationResult, LlmError> {
+            Ok(GenerationResult {
+                text: "candidate".into(),
+                ..Default::default()
+            })
         }
     }
 
@@ -159,17 +129,17 @@ mod tests {
         })
         .unwrap();
         let positive = Arc::new(JsonTool {
-            tool_name: "top_feedback_examples",
+            tool_name: "get_feedback",
             calls: Mutex::new(vec![]),
-            response: serde_json::to_value(Vec::<FeedbackExample>::new()).unwrap(),
+            response: serde_json::json!([]),
         });
         let discover = Arc::new(JsonTool {
-            tool_name: "discover_prompts",
+            tool_name: "search_skills",
             calls: Mutex::new(vec![]),
-            response: serde_json::to_value(Vec::<PromptDiscovery>::new()).unwrap(),
+            response: serde_json::json!([]),
         });
         let insert = Arc::new(JsonTool {
-            tool_name: "insert_prompt",
+            tool_name: "save_skill",
             calls: Mutex::new(vec![]),
             response: serde_json::to_value(PromptRecord {
                 id: stable_prompt_id("candidate"),
@@ -196,10 +166,18 @@ mod tests {
             .iterate(&crate::config::RetrievalConfig::default())
             .await
             .unwrap();
-        assert_eq!(result.record.text, "candidate");
-        assert_eq!(discover.calls.lock().unwrap()[0]["limit"], 2);
-        assert_eq!(insert.calls.lock().unwrap()[0]["text"], "candidate");
-        agent.grade(&result, FeedbackGrade::Positive).await.unwrap();
+        assert_eq!(result.text, "candidate");
+        assert_eq!(result.stats.total_calls, 0);
+        let candidate = CandidatePrompt {
+            record: result.saved_skill.unwrap_or(PromptRecord {
+                id: stable_prompt_id("candidate"),
+                text: result.text,
+            }),
+        };
+        agent
+            .grade(&candidate, FeedbackGrade::Positive)
+            .await
+            .unwrap();
         assert_eq!(record.calls.lock().unwrap()[0]["text"], "candidate");
     }
 }

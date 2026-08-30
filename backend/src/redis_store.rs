@@ -94,12 +94,12 @@ impl RedisFeedbackStore {
     }
 }
 
-pub struct TopFeedbackExamplesTool(pub std::sync::Arc<RedisFeedbackStore>);
+pub struct GetFeedbackTool(pub std::sync::Arc<RedisFeedbackStore>);
 
 #[async_trait::async_trait]
-impl Tool for TopFeedbackExamplesTool {
+impl Tool for GetFeedbackTool {
     fn name(&self) -> &'static str {
-        "top_feedback_examples"
+        "get_feedback"
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {

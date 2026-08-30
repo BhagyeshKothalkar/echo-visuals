@@ -104,12 +104,12 @@ impl QdrantPromptRepository {
     }
 }
 
-pub struct DiscoverPromptsTool(pub std::sync::Arc<QdrantPromptRepository>);
+pub struct SearchSkillsTool(pub std::sync::Arc<QdrantPromptRepository>);
 
 #[async_trait::async_trait]
-impl Tool for DiscoverPromptsTool {
+impl Tool for SearchSkillsTool {
     fn name(&self) -> &'static str {
-        "discover_prompts"
+        "search_skills"
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
@@ -133,12 +133,12 @@ impl Tool for DiscoverPromptsTool {
     }
 }
 
-pub struct InsertPromptTool(pub std::sync::Arc<QdrantPromptRepository>);
+pub struct SaveSkillTool(pub std::sync::Arc<QdrantPromptRepository>);
 
 #[async_trait::async_trait]
-impl Tool for InsertPromptTool {
+impl Tool for SaveSkillTool {
     fn name(&self) -> &'static str {
-        "insert_prompt"
+        "save_skill"
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {

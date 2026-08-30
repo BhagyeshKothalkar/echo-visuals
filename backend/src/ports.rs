@@ -1,4 +1,7 @@
-use crate::prompts::{PromptContext, RenderedPrompt};
+use crate::{
+    domain::PromptRecord,
+    prompts::{PromptContext, RenderedPrompt},
+};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
@@ -23,6 +26,20 @@ pub enum LlmError {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     async fn execute(&self, input: Value) -> Result<Value, ToolError>;
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolCallStats {
+    pub total_calls: usize,
+    pub search_skill_calls: usize,
+    pub saved_skill: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GenerationResult {
+    pub text: String,
+    pub stats: ToolCallStats,
+    pub saved_skill: Option<PromptRecord>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +81,25 @@ impl ToolRegistry {
             .execute(input)
             .await
     }
+
+    pub async fn call_with_stats(
+        &self,
+        name: &str,
+        input: Value,
+        stats: &Arc<std::sync::Mutex<ToolCallStats>>,
+    ) -> Result<Value, ToolError> {
+        {
+            let mut stats = stats.lock().unwrap();
+            stats.total_calls += 1;
+            if name == "search_skills" {
+                stats.search_skill_calls += 1;
+            }
+            if name == "save_skill" {
+                stats.saved_skill = true;
+            }
+        }
+        self.call(name, input).await
+    }
 }
 
 #[async_trait]
@@ -72,12 +108,14 @@ pub trait LlmProvider: Send + Sync {
         &self,
         prompt: &RenderedPrompt,
         context: &PromptContext,
-    ) -> Result<String, LlmError>;
+        tools: Arc<ToolRegistry>,
+    ) -> Result<GenerationResult, LlmError>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     struct Echo(&'static str);
 
@@ -125,5 +163,31 @@ mod tests {
         assert!(
             matches!(registry.call("missing", serde_json::Value::Null).await, Err(ToolError::NotFound(name)) if name == "missing")
         );
+    }
+
+    #[tokio::test]
+    async fn instrumented_calls_track_searches_and_explicit_saves() {
+        let registry = ToolRegistry::new(vec![Arc::new(Echo("search_skills"))]).unwrap();
+        let stats = Arc::new(Mutex::new(ToolCallStats::default()));
+
+        registry
+            .call_with_stats("search_skills", serde_json::json!({}), &stats)
+            .await
+            .unwrap();
+        registry
+            .call_with_stats("search_skills", serde_json::json!({}), &stats)
+            .await
+            .unwrap();
+        assert_eq!(stats.lock().unwrap().total_calls, 2);
+        assert_eq!(stats.lock().unwrap().search_skill_calls, 2);
+        assert!(!stats.lock().unwrap().saved_skill);
+
+        let registry = ToolRegistry::new(vec![Arc::new(Echo("save_skill"))]).unwrap();
+        registry
+            .call_with_stats("save_skill", serde_json::json!({}), &stats)
+            .await
+            .unwrap();
+        assert_eq!(stats.lock().unwrap().total_calls, 3);
+        assert!(stats.lock().unwrap().saved_skill);
     }
 }

@@ -6,8 +6,8 @@ use agentic_prompt_improver::{
     llm::RigOpenAiProvider,
     ports::ToolRegistry,
     prompts::PromptAssets,
-    qdrant::{DiscoverPromptsTool, InsertPromptTool, QdrantPromptRepository},
-    redis_store::{RecordFeedbackTool, RedisFeedbackStore, TopFeedbackExamplesTool},
+    qdrant::{QdrantPromptRepository, SaveSkillTool, SearchSkillsTool},
+    redis_store::{GetFeedbackTool, RecordFeedbackTool, RedisFeedbackStore},
 };
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, sync::Arc};
@@ -48,9 +48,9 @@ async fn main() -> anyhow::Result<()> {
     let assets = PromptAssets::load(&config.prompts)?;
     let llm = Arc::new(RigOpenAiProvider::new(config.llm.clone(), assets.clone())?);
     let tools = Arc::new(ToolRegistry::new(vec![
-        Arc::new(DiscoverPromptsTool(qdrant.clone())),
-        Arc::new(InsertPromptTool(qdrant)),
-        Arc::new(TopFeedbackExamplesTool(redis.clone())),
+        Arc::new(SearchSkillsTool(qdrant.clone())),
+        Arc::new(SaveSkillTool(qdrant)),
+        Arc::new(GetFeedbackTool(redis.clone())),
         Arc::new(RecordFeedbackTool(redis)),
     ])?);
     let agent = Agent::new(

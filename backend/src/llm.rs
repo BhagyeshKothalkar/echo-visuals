@@ -1,14 +1,16 @@
 use crate::{
     config::LlmConfig,
-    ports::{LlmError, LlmProvider},
+    ports::{GenerationResult, LlmError, LlmProvider, ToolCallStats, ToolRegistry},
     prompts::{PromptAssets, PromptContext, RenderedPrompt},
 };
 use async_trait::async_trait;
+use rig_agent::completion::Prompt;
 use rig_core::{
     client::CompletionClient,
-    completion::{AssistantContent, CompletionModel},
     providers::openai,
+    tool::{PortableDynamicTool, ToolExecutionError, ToolOutput},
 };
+use std::sync::{Arc, Mutex};
 pub struct RigOpenAiProvider {
     client: openai::CompletionsClient,
     model: String,
@@ -49,32 +51,65 @@ impl LlmProvider for RigOpenAiProvider {
         &self,
         prompt: &RenderedPrompt,
         _: &PromptContext,
-    ) -> Result<String, LlmError> {
+        tools: Arc<ToolRegistry>,
+    ) -> Result<GenerationResult, LlmError> {
         let model = self.client.completion_model(&self.model);
-        let request = model
-            .completion_request(&prompt.user)
-            .preamble(self.system.clone())
+        let stats = Arc::new(Mutex::new(ToolCallStats::default()));
+        let saved = Arc::new(Mutex::new(None));
+        let preamble = format!(
+            "{}\n\nUse skills and feedback tools when useful. Save a final skill when ready.",
+            self.system
+        );
+        let agent = rig_agent::AgentBuilder::new(model)
+            .preamble(&preamble)
             .temperature(self.temperature)
             .max_tokens(self.max_tokens)
+            .default_max_turns(8)
+            .portable_dynamic_tool(native_tool("search_skills", "Search stored prompt skills relevant to the target.", serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query","limit"]}), tools.clone(), stats.clone(), saved.clone()))
+            .portable_dynamic_tool(native_tool("save_skill", "Persist a useful final prompt skill.", serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}), tools.clone(), stats.clone(), saved.clone()))
+            .portable_dynamic_tool(native_tool("get_feedback", "Retrieve positive or negative feedback examples on demand.", serde_json::json!({"type":"object","properties":{"grade":{"type":"string","enum":["Positive","Negative"]},"limit":{"type":"integer"}},"required":["grade","limit"]}), tools, stats.clone(), saved.clone()))
             .build();
-        let response = model
-            .completion(request)
+        let candidate = agent
+            .prompt(&prompt.user)
             .await
-            .map_err(|e| LlmError::Request(anyhow::Error::msg(e.to_string())))?;
-        let candidate = response
-            .choice
-            .into_iter()
-            .find_map(|item| match item {
-                AssistantContent::Text(text) => Some(text.text),
-                _ => None,
-            })
-            .unwrap_or_default()
+            .map_err(|e| LlmError::Request(anyhow::Error::msg(e.to_string())))?
             .trim()
             .to_string();
         if candidate.is_empty() {
             Err(LlmError::EmptyCandidate)
         } else {
-            Ok(candidate)
+            Ok(GenerationResult {
+                text: candidate,
+                stats: stats.lock().unwrap().clone(),
+                saved_skill: saved.lock().unwrap().clone(),
+            })
         }
     }
+}
+
+fn native_tool(
+    name: &'static str,
+    description: &'static str,
+    parameters: serde_json::Value,
+    registry: Arc<ToolRegistry>,
+    stats: Arc<Mutex<ToolCallStats>>,
+    saved: Arc<Mutex<Option<crate::domain::PromptRecord>>>,
+) -> PortableDynamicTool {
+    PortableDynamicTool::new(name, description, parameters, move |input| {
+        let registry = registry.clone();
+        let stats = stats.clone();
+        let saved = saved.clone();
+        Box::pin(async move {
+            let result = registry
+                .call_with_stats(name, input, &stats)
+                .await
+                .map_err(|e| ToolExecutionError::other(e.to_string()))?;
+            if name == "save_skill" {
+                if let Ok(record) = serde_json::from_value(result.clone()) {
+                    *saved.lock().unwrap() = Some(record);
+                }
+            }
+            Ok(ToolOutput::from(result))
+        })
+    })
 }
