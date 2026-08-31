@@ -70,10 +70,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Interactive { .. } => loop {
             let c = harness.run_iteration(&agent).await?;
-            println!(
-                "id={}\n{}\nGrade [positive/negative/q]:",
-                c.id, c.text
-            );
+            println!("id={}\n{}\nGrade [positive/negative/q]:", c.id, c.text);
             let mut input = String::new();
             tokio::io::AsyncBufReadExt::read_line(
                 &mut tokio::io::BufReader::new(tokio::io::stdin()),

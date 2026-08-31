@@ -109,10 +109,7 @@ mod tests {
             assets,
         );
 
-        let candidate = Harness::new()
-            .run_iteration(&agent)
-            .await
-            .unwrap();
+        let candidate = Harness::new().run_iteration(&agent).await.unwrap();
 
         assert_eq!(candidate.text, "candidate output");
         assert_eq!(candidate.id, stable_prompt_id("candidate output"));
@@ -137,14 +134,16 @@ mod tests {
         let mut tools = HashMap::new();
         tools.insert("save_skill", Arc::new(save) as Arc<dyn Tool>);
         let registry = Arc::new(ToolRegistry::new(tools.into_values().collect()).unwrap());
-        let agent = Agent::new("target".into(), registry, Arc::new(Model {
-            searches: 2,
-            saved_skill: None,
-        }), assets);
-        let candidate = Harness::new()
-            .run_iteration(&agent)
-            .await
-            .unwrap();
+        let agent = Agent::new(
+            "target".into(),
+            registry,
+            Arc::new(Model {
+                searches: 2,
+                saved_skill: None,
+            }),
+            assets,
+        );
+        let candidate = Harness::new().run_iteration(&agent).await.unwrap();
         assert_eq!(*saved.lock().unwrap(), 1);
         assert_eq!(
             saved_input.lock().unwrap().as_ref().unwrap()["text"],
@@ -169,9 +168,7 @@ mod tests {
             last_input: None,
             response: serde_json::to_value(saved.clone()).unwrap(),
         };
-        let registry = Arc::new(
-            ToolRegistry::new(vec![Arc::new(save) as Arc<dyn Tool>]).unwrap(),
-        );
+        let registry = Arc::new(ToolRegistry::new(vec![Arc::new(save) as Arc<dyn Tool>]).unwrap());
         let agent = Agent::new(
             "target".into(),
             registry,
@@ -204,9 +201,7 @@ mod tests {
             })
             .unwrap(),
         };
-        let registry = Arc::new(
-            ToolRegistry::new(vec![Arc::new(save) as Arc<dyn Tool>]).unwrap(),
-        );
+        let registry = Arc::new(ToolRegistry::new(vec![Arc::new(save) as Arc<dyn Tool>]).unwrap());
         let agent = Agent::new(
             "target".into(),
             registry,
@@ -223,5 +218,4 @@ mod tests {
         assert_eq!(candidate.id, stable_prompt_id("candidate output"));
         assert_eq!(candidate.text, "candidate output");
     }
-
 }
