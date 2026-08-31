@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     }
     qdrant.initialize().await?;
     let assets = PromptAssets::load(&config.prompts)?;
-    let llm = Arc::new(RigOpenAiProvider::new(config.llm.clone(), assets.clone())?);
+    let llm = Arc::new(RigOpenAiProvider::new(config.llm.clone())?);
     let tools = Arc::new(ToolRegistry::new(vec![
         Arc::new(SearchSkillsTool(qdrant.clone())),
         Arc::new(SaveSkillTool(qdrant)),
@@ -62,17 +62,17 @@ async fn main() -> anyhow::Result<()> {
         llm,
         assets,
     );
-    let harness = Harness::new(config.retrieval);
+    let harness = Harness::new();
     match cli.command {
         Command::Run { .. } => {
             let c = harness.run_iteration(&agent).await?;
-            println!("id={}\n{}", c.record.id, c.record.text);
+            println!("id={}\n{}", c.id, c.text);
         }
         Command::Interactive { .. } => loop {
             let c = harness.run_iteration(&agent).await?;
             println!(
                 "id={}\n{}\nGrade [positive/negative/q]:",
-                c.record.id, c.record.text
+                c.id, c.text
             );
             let mut input = String::new();
             tokio::io::AsyncBufReadExt::read_line(

@@ -1,8 +1,7 @@
 use crate::{
-    config::RetrievalConfig,
     domain::{CandidatePrompt, FeedbackGrade},
     ports::{GenerationResult, LlmError, LlmProvider, ToolError, ToolRegistry},
-    prompts::{PromptAssets, PromptContext},
+    prompts::PromptAssets,
 };
 use std::sync::Arc;
 #[derive(Debug, thiserror::Error)]
@@ -11,8 +10,6 @@ pub enum AgentError {
     Tool(#[from] ToolError),
     #[error(transparent)]
     Llm(#[from] LlmError),
-    #[error("prompt rendering failed: {0}")]
-    Prompt(String),
 }
 pub struct Agent {
     target: String,
@@ -34,18 +31,9 @@ impl Agent {
             assets,
         }
     }
-    pub async fn iterate(&self, _: &RetrievalConfig) -> Result<GenerationResult, AgentError> {
-        let context = PromptContext {
-            target: self.target.clone(),
-            positive: vec![],
-            negative: vec![],
-            discoveries: vec![],
-        };
-        let rendered = self.assets.render(&context);
-        Ok(self
-            .llm
-            .generate(&rendered, &context, self.tools.clone())
-            .await?)
+    pub async fn iterate(&self) -> Result<GenerationResult, AgentError> {
+        let rendered = self.assets.render(&self.target);
+        Ok(self.llm.generate(&rendered, self.tools.clone()).await?)
     }
     pub async fn grade(
         &self,
@@ -56,8 +44,8 @@ impl Agent {
             .call(
                 "record_feedback",
                 serde_json::json!({
-                    "id": candidate.record.id,
-                    "text": candidate.record.text,
+                    "id": candidate.id,
+                    "text": candidate.text,
                     "grade": grade,
                 }),
             )
@@ -65,7 +53,7 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn save_skill(&self, text: &str) -> Result<crate::domain::PromptRecord, AgentError> {
+    pub async fn save_skill(&self, text: &str) -> Result<crate::domain::SkillRecord, AgentError> {
         serde_json::from_value(
             self.tools
                 .call("save_skill", serde_json::json!({"text": text}))
@@ -79,7 +67,7 @@ impl Agent {
 mod tests {
     use super::*;
     use crate::{
-        domain::{stable_prompt_id, PromptRecord},
+        domain::{stable_prompt_id, SkillRecord},
         ports::*,
         prompts::RenderedPrompt,
     };
@@ -106,7 +94,6 @@ mod tests {
         async fn generate(
             &self,
             _: &RenderedPrompt,
-            _: &PromptContext,
             _: Arc<ToolRegistry>,
         ) -> Result<GenerationResult, LlmError> {
             Ok(GenerationResult {
@@ -117,7 +104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn iteration_uses_fixed_json_tools_and_persists_candidate() {
+    async fn iteration_uses_model_output_as_candidate_for_feedback() {
         let dir = tempfile::tempdir().unwrap();
         let system = dir.path().join("s.md");
         let template = dir.path().join("t.md");
@@ -141,7 +128,7 @@ mod tests {
         let insert = Arc::new(JsonTool {
             tool_name: "save_skill",
             calls: Mutex::new(vec![]),
-            response: serde_json::to_value(PromptRecord {
+            response: serde_json::to_value(SkillRecord {
                 id: stable_prompt_id("candidate"),
                 text: "candidate".into(),
             })
@@ -162,17 +149,12 @@ mod tests {
             .unwrap(),
         );
         let agent = Agent::new("target".into(), tools, Arc::new(Llm), assets);
-        let result = agent
-            .iterate(&crate::config::RetrievalConfig::default())
-            .await
-            .unwrap();
+        let result = agent.iterate().await.unwrap();
         assert_eq!(result.text, "candidate");
         assert_eq!(result.stats.total_calls, 0);
         let candidate = CandidatePrompt {
-            record: result.saved_skill.unwrap_or(PromptRecord {
-                id: stable_prompt_id("candidate"),
-                text: result.text,
-            }),
+            id: stable_prompt_id(&result.text),
+            text: result.text,
         };
         agent
             .grade(&candidate, FeedbackGrade::Positive)

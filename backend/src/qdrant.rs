@@ -1,6 +1,6 @@
 use crate::{
     config::QdrantConfig,
-    domain::{stable_prompt_id, PromptDiscovery, PromptRecord},
+    domain::{stable_prompt_id, SkillDiscovery, SkillRecord},
     ports::{StorageError, Tool, ToolError},
     ranking,
 };
@@ -70,19 +70,19 @@ impl QdrantPromptRepository {
         }
         Ok(())
     }
-    pub async fn insert_prompt(&self, text: &str) -> Result<PromptRecord, StorageError> {
-        let record = PromptRecord {
+    pub async fn insert_prompt(&self, text: &str) -> Result<SkillRecord, StorageError> {
+        let record = SkillRecord {
             id: stable_prompt_id(text),
             text: text.trim().into(),
         };
-        self.request(self.client.put(self.url(&format!("collections/{}/points",self.collection))).json(&json!({"points":[{"id":record.id,"vector":[0.0],"payload":{"prompt_text":record.text,"prompt_kind":"candidate"}}]}))).await?;
+        self.request(self.client.put(self.url(&format!("collections/{}/points",self.collection))).json(&json!({"points":[{"id":record.id,"vector":[0.0],"payload":{"prompt_text":record.text,"prompt_kind":"skill"}}]}))).await?;
         Ok(record)
     }
     pub async fn discover(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<PromptDiscovery>, StorageError> {
+    ) -> Result<Vec<SkillDiscovery>, StorageError> {
         let body = self
             .request(
                 self.client
@@ -97,7 +97,7 @@ impl QdrantPromptRepository {
             .filter_map(|p| {
                 let id = p["id"].as_str()?.parse().ok()?;
                 let text = p["payload"]["prompt_text"].as_str()?.to_string();
-                Some(PromptRecord { id, text })
+                Some(SkillRecord { id, text })
             })
             .collect::<Vec<_>>();
         Ok(ranking::rank(query, records, limit))

@@ -17,7 +17,6 @@ pub struct Config {
     pub qdrant: QdrantConfig,
     pub redis: RedisConfig,
     pub llm: LlmConfig,
-    pub retrieval: RetrievalConfig,
     pub prompts: PromptAssetConfig,
     pub logging: LoggingConfig,
 }
@@ -43,13 +42,6 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     pub api_key: Option<String>,
     pub organization: Option<String>,
-}
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
-pub struct RetrievalConfig {
-    pub positive_limit: usize,
-    pub negative_limit: usize,
-    pub discovery_limit: usize,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -92,15 +84,6 @@ impl Default for LlmConfig {
         }
     }
 }
-impl Default for RetrievalConfig {
-    fn default() -> Self {
-        Self {
-            positive_limit: 2,
-            negative_limit: 2,
-            discovery_limit: 2,
-        }
-    }
-}
 impl Default for PromptAssetConfig {
     fn default() -> Self {
         Self {
@@ -134,14 +117,6 @@ impl Config {
         Ok(config)
     }
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.retrieval.positive_limit == 0
-            || self.retrieval.negative_limit == 0
-            || self.retrieval.discovery_limit == 0
-        {
-            return Err(ConfigError::Invalid(
-                "retrieval limits must be greater than zero".into(),
-            ));
-        }
         if !(0.0..=2.0).contains(&self.llm.temperature) {
             return Err(ConfigError::Invalid(
                 "temperature must be between 0 and 2".into(),
@@ -156,21 +131,10 @@ mod tests {
     use super::*;
     use std::io::Write;
     #[test]
-    fn toml_overrides_defaults_and_api_key_is_not_required() {
+    fn toml_overrides_defaults() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(
-            f,
-            "[retrieval]\ndiscovery_limit = 4\n[llm]\nmodel = 'local-model'"
-        )
-        .unwrap();
+        writeln!(f, "[llm]\nmodel = 'local-model'").unwrap();
         let c = Config::from_sources(Some(f.path())).unwrap();
-        assert_eq!(c.retrieval.discovery_limit, 4);
         assert_eq!(c.llm.model, "local-model");
-    }
-    #[test]
-    fn rejects_zero_limit() {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "[retrieval]\npositive_limit=0").unwrap();
-        assert!(Config::from_sources(Some(f.path())).is_err());
     }
 }

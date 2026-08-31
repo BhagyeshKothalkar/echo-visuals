@@ -46,13 +46,13 @@ impl RedisFeedbackStore {
             .incr(format!("{}:sequence", self.prefix), 1)
             .await
             .map_err(|e| StorageError::Backend(anyhow::Error::new(e)))?;
-        let id = candidate.record.id.to_string();
+        let id = candidate.id.to_string();
         let _: () = c
             .hset_multiple(
-                self.item(candidate.record.id),
+                self.item(candidate.id),
                 &[
-                    ("qdrant_id", id.clone()),
-                    ("text", candidate.record.text.clone()),
+                    ("candidate_id", id.clone()),
+                    ("text", candidate.text.clone()),
                     ("grade", format!("{:?}", grade)),
                 ],
             )
@@ -144,10 +144,8 @@ impl Tool for RecordFeedbackTool {
                 source,
             })?;
         let candidate = CandidatePrompt {
-            record: crate::domain::PromptRecord {
-                id: request.id,
-                text: request.text,
-            },
+            id: request.id,
+            text: request.text,
         };
         self.0
             .record_feedback(&candidate, request.grade)

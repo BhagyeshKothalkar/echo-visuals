@@ -1,7 +1,7 @@
 use crate::{
     config::LlmConfig,
     ports::{GenerationResult, LlmError, LlmProvider, ToolCallStats, ToolRegistry},
-    prompts::{PromptAssets, PromptContext, RenderedPrompt},
+    prompts::RenderedPrompt,
 };
 use async_trait::async_trait;
 use rig_agent::completion::Prompt;
@@ -14,12 +14,11 @@ use std::sync::{Arc, Mutex};
 pub struct RigOpenAiProvider {
     client: openai::CompletionsClient,
     model: String,
-    system: String,
     temperature: f64,
     max_tokens: u64,
 }
 impl RigOpenAiProvider {
-    pub fn new(config: LlmConfig, assets: PromptAssets) -> Result<Self, LlmError> {
+    pub fn new(config: LlmConfig) -> Result<Self, LlmError> {
         let key = config
             .api_key
             .ok_or_else(|| LlmError::Request(anyhow::anyhow!("LLM_API_KEY is required")))?;
@@ -28,18 +27,9 @@ impl RigOpenAiProvider {
             .base_url(config.base_url)
             .build()
             .map_err(|e| LlmError::Request(anyhow::Error::msg(e.to_string())))?;
-        let system = assets
-            .render(&PromptContext {
-                target: String::new(),
-                positive: vec![],
-                negative: vec![],
-                discoveries: vec![],
-            })
-            .system;
         Ok(Self {
             client,
             model: config.model,
-            system,
             temperature: config.temperature as f64,
             max_tokens: config.max_tokens as u64,
         })
@@ -50,16 +40,12 @@ impl LlmProvider for RigOpenAiProvider {
     async fn generate(
         &self,
         prompt: &RenderedPrompt,
-        _: &PromptContext,
         tools: Arc<ToolRegistry>,
     ) -> Result<GenerationResult, LlmError> {
         let model = self.client.completion_model(&self.model);
         let stats = Arc::new(Mutex::new(ToolCallStats::default()));
         let saved = Arc::new(Mutex::new(None));
-        let preamble = format!(
-            "{}\n\nUse skills and feedback tools when useful. Save a final skill when ready.",
-            self.system
-        );
+        let preamble = prompt.system.clone();
         let agent = rig_agent::AgentBuilder::new(model)
             .preamble(&preamble)
             .temperature(self.temperature)
@@ -93,7 +79,7 @@ fn native_tool(
     parameters: serde_json::Value,
     registry: Arc<ToolRegistry>,
     stats: Arc<Mutex<ToolCallStats>>,
-    saved: Arc<Mutex<Option<crate::domain::PromptRecord>>>,
+    saved: Arc<Mutex<Option<crate::domain::SkillRecord>>>,
 ) -> PortableDynamicTool {
     PortableDynamicTool::new(name, description, parameters, move |input| {
         let registry = registry.clone();
@@ -105,9 +91,10 @@ fn native_tool(
                 .await
                 .map_err(|e| ToolExecutionError::other(e.to_string()))?;
             if name == "save_skill" {
-                if let Ok(record) = serde_json::from_value(result.clone()) {
-                    *saved.lock().unwrap() = Some(record);
-                }
+                let record = serde_json::from_value(result.clone()).map_err(|e| {
+                    ToolExecutionError::other(format!("invalid save_skill result: {e}"))
+                })?;
+                *saved.lock().unwrap() = Some(record);
             }
             Ok(ToolOutput::from(result))
         })

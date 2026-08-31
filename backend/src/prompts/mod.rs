@@ -1,7 +1,4 @@
-use crate::{
-    config::PromptAssetConfig,
-    domain::{FeedbackExample, PromptDiscovery},
-};
+use crate::config::PromptAssetConfig;
 use std::fs;
 
 #[derive(Debug, thiserror::Error)]
@@ -15,13 +12,6 @@ pub enum PromptError {
 pub struct RenderedPrompt {
     pub system: String,
     pub user: String,
-}
-#[derive(Clone, Debug)]
-pub struct PromptContext {
-    pub target: String,
-    pub positive: Vec<FeedbackExample>,
-    pub negative: Vec<FeedbackExample>,
-    pub discoveries: Vec<PromptDiscovery>,
 }
 #[derive(Clone, Debug)]
 pub struct PromptAssets {
@@ -40,26 +30,8 @@ impl PromptAssets {
         }
         Ok(Self { system, template })
     }
-    pub fn render(&self, context: &PromptContext) -> RenderedPrompt {
-        let examples = |items: &[FeedbackExample]| {
-            items
-                .iter()
-                .map(|e| format!("- [{}] {}", e.id, e.text))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let discoveries = context
-            .discoveries
-            .iter()
-            .map(|e| format!("- [{}] {}", e.record.id, e.record.text))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let user = self
-            .template
-            .replace("{{target}}", &context.target)
-            .replace("{{positive_examples}}", &examples(&context.positive))
-            .replace("{{negative_examples}}", &examples(&context.negative))
-            .replace("{{discoveries}}", &discoveries);
+    pub fn render(&self, target: &str) -> RenderedPrompt {
+        let user = self.template.replace("{{target}}", target);
         RenderedPrompt {
             system: self.system.clone(),
             user,
@@ -91,12 +63,7 @@ mod tests {
             template_path: template.display().to_string(),
         })
         .unwrap();
-        let rendered = assets.render(&PromptContext {
-            target: "target text".into(),
-            positive: vec![],
-            negative: vec![],
-            discoveries: vec![],
-        });
+        let rendered = assets.render("target text");
         assert_eq!(rendered.user, "Target: target text");
     }
 }

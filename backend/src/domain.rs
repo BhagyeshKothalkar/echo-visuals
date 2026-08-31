@@ -4,14 +4,14 @@ use uuid::Uuid;
 pub type PromptId = Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromptRecord {
+pub struct SkillRecord {
     pub id: PromptId,
     pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PromptDiscovery {
-    pub record: PromptRecord,
+pub struct SkillDiscovery {
+    pub record: SkillRecord,
     pub score: f32,
 }
 
@@ -29,7 +29,8 @@ pub struct FeedbackExample {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidatePrompt {
-    pub record: PromptRecord,
+    pub id: PromptId,
+    pub text: String,
 }
 
 pub fn stable_prompt_id(text: &str) -> PromptId {

@@ -1,7 +1,4 @@
-use crate::{
-    domain::PromptRecord,
-    prompts::{PromptContext, RenderedPrompt},
-};
+use crate::{domain::SkillRecord, prompts::RenderedPrompt};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
@@ -39,7 +36,7 @@ pub struct ToolCallStats {
 pub struct GenerationResult {
     pub text: String,
     pub stats: ToolCallStats,
-    pub saved_skill: Option<PromptRecord>,
+    pub saved_skill: Option<SkillRecord>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -107,7 +104,6 @@ pub trait LlmProvider: Send + Sync {
     async fn generate(
         &self,
         prompt: &RenderedPrompt,
-        context: &PromptContext,
         tools: Arc<ToolRegistry>,
     ) -> Result<GenerationResult, LlmError>;
 }

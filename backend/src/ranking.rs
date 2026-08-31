@@ -1,4 +1,4 @@
-use crate::domain::{PromptDiscovery, PromptRecord};
+use crate::domain::{SkillDiscovery, SkillRecord};
 use std::collections::HashSet;
 
 pub fn tokens(text: &str) -> HashSet<String> {
@@ -11,9 +11,9 @@ pub fn tokens(text: &str) -> HashSet<String> {
 
 pub fn rank(
     query: &str,
-    records: impl IntoIterator<Item = PromptRecord>,
+    records: impl IntoIterator<Item = SkillRecord>,
     limit: usize,
-) -> Vec<PromptDiscovery> {
+) -> Vec<SkillDiscovery> {
     let query_tokens = tokens(query);
     let mut result: Vec<_> = records
         .into_iter()
@@ -24,7 +24,7 @@ pub fn rank(
             } else {
                 query_tokens.intersection(&text_tokens).count() as f32 / query_tokens.len() as f32
             };
-            PromptDiscovery { record, score }
+            SkillDiscovery { record, score }
         })
         .collect();
     result.sort_by(|a, b| {
@@ -40,12 +40,12 @@ pub fn rank(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{stable_prompt_id, PromptRecord};
+    use crate::domain::{stable_prompt_id, SkillRecord};
     #[test]
     fn ranks_by_case_insensitive_token_overlap_and_limit() {
         let records = ["Rust async agent", "Cooking recipe", "Rust testing"]
             .into_iter()
-            .map(|text| PromptRecord {
+            .map(|text| SkillRecord {
                 id: stable_prompt_id(text),
                 text: text.into(),
             });

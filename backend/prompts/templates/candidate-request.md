@@ -1,13 +1,4 @@
 Target prompt:
 {{target}}
 
-Positive examples:
-{{positive_examples}}
-
-Negative examples:
-{{negative_examples}}
-
-Qdrant discoveries:
-{{discoveries}}
-
-Write the next candidate prompt.
+Write the next candidate prompt. Use model tools to retrieve relevant skills and feedback when useful.
