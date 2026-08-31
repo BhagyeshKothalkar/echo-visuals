@@ -119,14 +119,14 @@ impl LlmProvider for RigOpenAiProvider {
             tools,
         );
         use rig_core::completion::message::{DocumentSourceKind, Image, Text, UserContent};
-        let image = UserContent::Image(Image {
-            data: DocumentSourceKind::Url(input.image.clone()),
-            ..Default::default()
-        });
-        let prompt = rig_core::completion::Message::from(vec![
-            UserContent::Text(Text::new(&input.target)),
-            image,
-        ]);
+        let mut contents = vec![UserContent::Text(Text::new(&input.target))];
+        if let Some(image) = &input.image {
+            contents.push(UserContent::Image(Image {
+                data: DocumentSourceKind::Url(image.clone()),
+                ..Default::default()
+            }));
+        }
+        let prompt = rig_core::completion::Message::from(contents);
         let text =
             rig_agent::AgentBuilder::new(self.analyst.client.completion_model(&self.analyst.model))
                 .preamble(include_str!("../prompts/agents/analyst-system.md"))

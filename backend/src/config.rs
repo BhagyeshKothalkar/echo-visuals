@@ -20,7 +20,6 @@ pub struct Config {
     pub analyst: VlmConfig,
     pub optimizer: LlmConfig,
     pub curator: LlmConfig,
-    pub prompts: PromptAssetConfig,
     pub logging: LoggingConfig,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -66,12 +65,6 @@ pub struct VlmConfig {
     pub max_tokens: u32,
     pub api_key: Option<String>,
     pub max_turns: usize,
-}
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
-pub struct PromptAssetConfig {
-    pub system_path: String,
-    pub template_path: String,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -130,14 +123,6 @@ impl Default for VlmConfig {
             max_tokens: 512,
             api_key: None,
             max_turns: 4,
-        }
-    }
-}
-impl Default for PromptAssetConfig {
-    fn default() -> Self {
-        Self {
-            system_path: "prompts/agents/prompt-improver-system.md".into(),
-            template_path: "prompts/templates/candidate-request.md".into(),
         }
     }
 }

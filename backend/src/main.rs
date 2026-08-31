@@ -48,13 +48,13 @@ enum Command {
         #[arg(long)]
         target: String,
         #[arg(long)]
-        image: String,
+        image: Option<String>,
     },
     Interactive {
         #[arg(long)]
         target: String,
         #[arg(long)]
-        image: String,
+        image: Option<String>,
     },
 }
 #[tokio::main]
@@ -64,13 +64,13 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_sources(Some(&cli.config))?;
     let embedder = Arc::new(QwenEmbeddingEmbedder::new(&config.embedding));
     let qdrant = Arc::new(QdrantPromptRepository::new(&config.qdrant, embedder));
-    let redis = Arc::new(RedisFeedbackStore::new(&config.redis).await?);
     if matches!(cli.command, Command::Init) {
         qdrant.initialize().await?;
         println!("initialized {}", config.qdrant.collection);
         return Ok(());
     }
     qdrant.initialize().await?;
+    let redis = Arc::new(RedisFeedbackStore::new(&config.redis).await?);
     let llm = Arc::new(RigOpenAiProvider::new(
         config.analyst.clone(),
         config.optimizer.clone(),
@@ -82,7 +82,11 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(RecordFeedbackTool(redis)),
     ])?);
     let image = match &cli.command {
-        Command::Run { image, .. } | Command::Interactive { image, .. } => image_reference(image)?,
+        Command::Run { image, .. } | Command::Interactive { image, .. } => image
+            .as_deref()
+            .map(image_reference)
+            .transpose()?
+            .unwrap_or_default(),
         Command::Init => unreachable!(),
     };
     let agent = Agent::new(

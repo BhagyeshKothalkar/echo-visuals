@@ -34,23 +34,55 @@ fn upsert_payload(skill: &SkillRecord, positive: Vec<f32>, negative: Vec<f32>) -
     })
 }
 
-fn projected_search_results(body: &Value) -> Vec<SkillDiscovery> {
-    body["result"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|point| serde_json::from_value(point.get("payload")?.clone()).ok())
+fn projected_search_results(body: &Value) -> Result<Vec<SkillDiscovery>, StorageError> {
+    let points = body["result"].as_array().ok_or_else(|| {
+        StorageError::Invalid("Qdrant search response missing result array".into())
+    })?;
+
+    points
+        .iter()
+        .map(|point| {
+            let payload = point.get("payload").ok_or_else(|| {
+                StorageError::Invalid(format!(
+                    "Qdrant search point {:?} is missing payload",
+                    point.get("id")
+                ))
+            })?;
+            let skill: SkillRecord = serde_json::from_value(payload.clone())
+                .map_err(|e| StorageError::Invalid(format!("invalid SkillRecord payload: {e}")))?;
+            skill
+                .validate()
+                .map_err(|e| StorageError::Invalid(format!("invalid SkillRecord payload: {e}")))?;
+            Ok(skill.model_projection())
+        })
         .collect()
 }
 
 fn exact_skill_from_response(body: &Value, id: uuid::Uuid) -> Result<SkillRecord, StorageError> {
-    body["result"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find_map(|point| serde_json::from_value::<SkillRecord>(point.get("payload")?.clone()).ok())
-        .filter(|skill| skill.skill_id == id)
-        .ok_or_else(|| StorageError::Invalid(format!("skill not found: {id}")))
+    let points = body["result"].as_array().ok_or_else(|| {
+        StorageError::Invalid("Qdrant lookup response missing result array".into())
+    })?;
+    let point = points
+        .first()
+        .ok_or_else(|| StorageError::Invalid(format!("skill not found: {id}")))?;
+    let payload = point.get("payload").ok_or_else(|| {
+        StorageError::Invalid(format!(
+            "Qdrant point {:?} is missing payload",
+            point.get("id")
+        ))
+    })?;
+    let skill: SkillRecord = serde_json::from_value(payload.clone())
+        .map_err(|e| StorageError::Invalid(format!("invalid SkillRecord payload: {e}")))?;
+    skill
+        .validate()
+        .map_err(|e| StorageError::Invalid(format!("invalid SkillRecord payload: {e}")))?;
+    if skill.skill_id != id {
+        return Err(StorageError::Invalid(format!(
+            "Qdrant payload skill_id {} does not match requested id {id}",
+            skill.skill_id
+        )));
+    }
+    Ok(skill)
 }
 
 pub fn search_request(vector: Vec<f32>, limit: usize) -> Value {
@@ -232,9 +264,19 @@ impl QdrantPromptRepository {
         let negative_size = vectors["negative"]["size"].as_u64();
         let negative_distance = vectors["negative"]["distance"].as_str();
 
+        let only_v2_vectors = vectors
+            .as_object()
+            .map(|vectors| {
+                vectors.len() == 2
+                    && vectors.contains_key("positive")
+                    && vectors.contains_key("negative")
+            })
+            .unwrap_or(false);
+
         let expected_dimension = self.embedding_dimension as u64;
 
-        let schema_matches = positive_size == Some(expected_dimension)
+        let schema_matches = only_v2_vectors
+            && positive_size == Some(expected_dimension)
             && negative_size == Some(expected_dimension)
             && positive_distance == Some("Cosine")
             && negative_distance == Some("Cosine");
@@ -310,47 +352,6 @@ impl QdrantPromptRepository {
             }
         }
 
-        self.reindex_existing().await?;
-
-        Ok(())
-    }
-
-    async fn reindex_existing(&self) -> Result<(), StorageError> {
-        let body = self
-            .request(
-                self.client
-                    .post(self.url(&format!("collections/{}/points/scroll", self.collection)))
-                    .json(&json!({
-                        "limit": 1000,
-                        "with_payload": true,
-                        "with_vector": false
-                    })),
-            )
-            .await?;
-
-        let points = body["result"]["points"].as_array().ok_or_else(|| {
-            StorageError::Invalid("Qdrant scroll response missing result.points".into())
-        })?;
-
-        for point in points {
-            let payload = point.get("payload").ok_or_else(|| {
-                StorageError::Invalid(format!(
-                    "Qdrant point {:?} is missing payload",
-                    point.get("id")
-                ))
-            })?;
-
-            let skill: SkillRecord = serde_json::from_value(payload.clone()).map_err(|e| {
-                StorageError::Invalid(format!(
-                    "invalid V2 SkillRecord payload in Qdrant point {:?}: {}",
-                    point.get("id"),
-                    e
-                ))
-            })?;
-
-            self.insert_skill(&skill).await?;
-        }
-
         Ok(())
     }
 
@@ -398,7 +399,7 @@ impl QdrantPromptRepository {
             )
             .await?;
 
-        Ok(projected_search_results(&body))
+        projected_search_results(&body)
     }
 
     pub async fn get_skill(&self, id: uuid::Uuid) -> Result<SkillRecord, StorageError> {
@@ -463,7 +464,7 @@ mod tests {
 
     fn skill() -> SkillRecord {
         SkillRecord {
-            skill_id: uuid::Uuid::nil(),
+            skill_id: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"valid"),
             name: "n".into(),
             description: "d".into(),
             knowledge: Knowledge {
@@ -521,7 +522,7 @@ mod tests {
 
     #[test]
     fn search_results_and_exact_lookup_preserve_skill_id_and_missing_behavior() {
-        let id = uuid::Uuid::nil();
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"valid");
         let payload = serde_json::to_value(skill()).unwrap();
         let body = json!({
             "result": [{
@@ -530,7 +531,7 @@ mod tests {
             }]
         });
 
-        assert_eq!(projected_search_results(&body)[0].skill_id, id);
+        assert_eq!(projected_search_results(&body).unwrap()[0].skill_id, id);
         assert_eq!(exact_skill_from_response(&body, id).unwrap().skill_id, id);
 
         assert!(matches!(
@@ -539,6 +540,31 @@ mod tests {
                 uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"missing")
             ),
             Err(StorageError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_search_payload_is_reported_instead_of_dropped() {
+        let body = json!({
+            "result": [{"id": uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"bad-search"), "payload": {"not": "a skill"}}]
+        });
+
+        assert!(matches!(
+            projected_search_results(&body),
+            Err(StorageError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_exact_payload_is_reported_instead_of_skipped() {
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"bad-exact");
+        let body = json!({
+            "result": [{"id": id, "payload": {"not": "a skill"}}]
+        });
+
+        assert!(matches!(
+            exact_skill_from_response(&body, id),
+            Err(StorageError::Invalid(message)) if message.contains("invalid SkillRecord payload")
         ));
     }
 
@@ -674,5 +700,35 @@ mod tests {
             repository.validate_collection_schema(&value),
             Err(StorageError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn legacy_extra_vector_is_rejected() {
+        let config = QdrantConfig {
+            url: "http://localhost:6333".into(),
+            collection: "skills".into(),
+            embedding_dimension: 1024,
+            seed: false,
+        };
+        let embedder: std::sync::Arc<dyn Embedder> = std::sync::Arc::new(
+            QwenEmbeddingEmbedder::new(&crate::config::EmbeddingConfig {
+                endpoint: "http://localhost:8080/v1/embeddings".into(),
+                model: "test".into(),
+                device: "cpu".into(),
+                dimension: 1024,
+                batch_size: 8,
+                normalize: true,
+            }),
+        );
+        let repository = QdrantPromptRepository::new(&config, embedder);
+        let value = json!({
+            "result": {"config": {"params": {"vectors": {
+                "positive": {"size": 1024, "distance": "Cosine"},
+                "negative": {"size": 1024, "distance": "Cosine"},
+                "default": {"size": 1024, "distance": "Cosine"}
+            }}}}
+        });
+
+        assert!(repository.validate_collection_schema(&value).is_err());
     }
 }

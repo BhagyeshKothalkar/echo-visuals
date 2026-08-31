@@ -6,7 +6,7 @@ pub type PromptId = Uuid;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalystInput {
     pub target: String,
-    pub image: String,
+    pub image: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -95,6 +95,7 @@ pub struct AnalystOutput {
     pub weaknesses: Vec<String>,
     pub requirements: Vec<String>,
     pub relevant_skill_ids: Vec<PromptId>,
+    pub feedback: Vec<FeedbackExample>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -213,6 +214,26 @@ mod v2_tests {
         assert!(serde_json::from_value::<AnalystOutput>(serde_json::json!({})).is_err());
         assert!(
             serde_json::from_value::<OptimizerOutput>(serde_json::json!({"prompt":"x"})).is_err()
+        );
+    }
+
+    #[test]
+    fn analyst_output_serializes_surfaced_feedback() {
+        let output = AnalystOutput {
+            observations: vec![],
+            weaknesses: vec![],
+            requirements: vec![],
+            relevant_skill_ids: vec![],
+            feedback: vec![FeedbackExample {
+                id: Uuid::new_v5(&Uuid::NAMESPACE_URL, b"feedback"),
+                text: "use stronger lighting direction".into(),
+            }],
+        };
+
+        let value = serde_json::to_value(output).unwrap();
+        assert_eq!(
+            value["feedback"][0]["text"],
+            "use stronger lighting direction"
         );
     }
 

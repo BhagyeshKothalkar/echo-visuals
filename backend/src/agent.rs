@@ -43,15 +43,18 @@ impl Agent {
             .analyze(
                 &AnalystInput {
                     target: self.target.clone(),
-                    image: self.image.clone(),
+                    image: (!self.image.trim().is_empty()).then(|| self.image.clone()),
                 },
                 self.tools.clone(),
             )
             .await?;
         let skills = self.resolve(&analysis.relevant_skill_ids).await?;
-        let input =
-            serde_json::json!({"target":self.target,"analysis":analysis,"selected_skills":skills})
-                .to_string();
+        let input = serde_json::json!({
+            "target": self.target,
+            "analysis": analysis,
+            "selected_skills": skills
+        })
+        .to_string();
         let optimized = self.llm.optimize(&input).await?;
         if optimized.prompt.trim().is_empty() {
             return Err(crate::ports::LlmError::InvalidOutput {
@@ -166,6 +169,7 @@ mod tests {
         ids: Vec<uuid::Uuid>,
         save: bool,
         calls: Mutex<Vec<&'static str>>,
+        optimize_inputs: Mutex<Vec<String>>,
     }
     #[async_trait]
     impl LlmProvider for Model {
@@ -180,10 +184,15 @@ mod tests {
                 weaknesses: vec![],
                 requirements: vec![],
                 relevant_skill_ids: self.ids.clone(),
+                feedback: vec![crate::domain::FeedbackExample {
+                    id: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"feedback"),
+                    text: "feedback surfaced by analyst".into(),
+                }],
             })
         }
-        async fn optimize(&self, _: &str) -> Result<OptimizerOutput, crate::ports::LlmError> {
+        async fn optimize(&self, input: &str) -> Result<OptimizerOutput, crate::ports::LlmError> {
             self.calls.lock().unwrap().push("optimize");
+            self.optimize_inputs.lock().unwrap().push(input.into());
             Ok(OptimizerOutput {
                 prompt: "optimized".into(),
                 save_skill: self.save,
@@ -219,11 +228,13 @@ mod tests {
             ids: vec![id, id],
             save: false,
             calls: Mutex::new(vec![]),
+            optimize_inputs: Mutex::new(vec![]),
         });
         let result = make(model.clone(), store.clone()).iterate().await.unwrap();
         assert_eq!(result.text, "optimized");
         assert_eq!(*store.gets.lock().unwrap(), vec![id]);
         assert_eq!(*model.calls.lock().unwrap(), vec!["analyze", "optimize"]);
+        assert!(model.optimize_inputs.lock().unwrap()[0].contains("feedback surfaced by analyst"));
     }
     #[tokio::test]
     async fn curator_and_save_are_conditional() {
@@ -237,6 +248,7 @@ mod tests {
             ids: vec![id],
             save: true,
             calls: Mutex::new(vec![]),
+            optimize_inputs: Mutex::new(vec![]),
         });
         make(model.clone(), store.clone()).iterate().await.unwrap();
         assert_eq!(*store.saves.lock().unwrap(), 1);
@@ -256,6 +268,7 @@ mod tests {
             ids: vec![uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"missing")],
             save: true,
             calls: Mutex::new(vec![]),
+            optimize_inputs: Mutex::new(vec![]),
         });
         assert!(matches!(
             make(model.clone(), store).iterate().await,

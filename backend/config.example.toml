@@ -35,10 +35,5 @@ model = "gpt-4o-mini"
 temperature = 0.2
 max_tokens = 512
 
-
-[prompts]
-system_path = "prompts/agents/optimizer-system.md"
-template_path = "prompts/templates/candidate-request.md"
-
 [logging]
 level = "info"
