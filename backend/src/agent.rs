@@ -53,10 +53,13 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn save_skill(&self, text: &str) -> Result<crate::domain::SkillRecord, AgentError> {
+    pub async fn save_skill(
+        &self,
+        skill: &crate::domain::SkillRecord,
+    ) -> Result<crate::domain::SkillRecord, AgentError> {
         serde_json::from_value(
             self.tools
-                .call("save_skill", serde_json::json!({"text": text}))
+                .call("save_skill", serde_json::to_value(skill).unwrap())
                 .await?,
         )
         .map_err(|e| crate::ports::ToolError::Execution(anyhow::Error::new(e)).into())
@@ -67,11 +70,39 @@ impl Agent {
 mod tests {
     use super::*;
     use crate::{
-        domain::{stable_prompt_id, SkillRecord},
+        domain::{stable_prompt_id, Knowledge, Lifecycle, Retrieval, SkillRecord, Usage},
         ports::*,
         prompts::RenderedPrompt,
     };
     use std::sync::Mutex;
+
+    fn skill() -> SkillRecord {
+        SkillRecord {
+            skill_id: uuid::Uuid::nil(),
+            name: "candidate".into(),
+            description: "candidate".into(),
+            knowledge: Knowledge {
+                core: "candidate".into(),
+                principles: vec![],
+                procedures: vec![],
+                failure_modes: vec![],
+                examples: vec![],
+            },
+            usage: Usage {
+                when_to_use: "candidate".into(),
+                when_not_to_use: String::new(),
+                signals: vec![],
+                anti_signals: vec![],
+            },
+            retrieval: Retrieval { keywords: vec![] },
+            lifecycle: Lifecycle {
+                version: "2".into(),
+                status: "active".into(),
+                source: "test".into(),
+                confidence: 1.0,
+            },
+        }
+    }
 
     struct JsonTool {
         tool_name: &'static str,
@@ -128,11 +159,7 @@ mod tests {
         let insert = Arc::new(JsonTool {
             tool_name: "save_skill",
             calls: Mutex::new(vec![]),
-            response: serde_json::to_value(SkillRecord {
-                id: stable_prompt_id("candidate"),
-                text: "candidate".into(),
-            })
-            .unwrap(),
+            response: serde_json::to_value(skill()).unwrap(),
         });
         let record = Arc::new(JsonTool {
             tool_name: "record_feedback",

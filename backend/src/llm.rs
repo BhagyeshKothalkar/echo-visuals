@@ -52,7 +52,7 @@ impl LlmProvider for RigOpenAiProvider {
             .max_tokens(self.max_tokens)
             .default_max_turns(8)
             .portable_dynamic_tool(native_tool("search_skills", "Search stored prompt skills relevant to the target.", serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query","limit"]}), tools.clone(), stats.clone(), saved.clone()))
-            .portable_dynamic_tool(native_tool("save_skill", "Persist a useful final prompt skill.", serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}), tools.clone(), stats.clone(), saved.clone()))
+            .portable_dynamic_tool(native_tool("save_skill", "Persist a useful reusable skill.", serde_json::json!({"type":"object","properties":{"skill_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"knowledge":{"type":"object"},"usage":{"type":"object"},"retrieval":{"type":"object"},"lifecycle":{"type":"object"}},"required":["skill_id","name","description","knowledge","usage","retrieval","lifecycle"]}), tools.clone(), stats.clone(), saved.clone()))
             .portable_dynamic_tool(native_tool("get_feedback", "Retrieve positive or negative feedback examples on demand.", serde_json::json!({"type":"object","properties":{"grade":{"type":"string","enum":["Positive","Negative"]},"limit":{"type":"integer"}},"required":["grade","limit"]}), tools, stats.clone(), saved.clone()))
             .build();
         let candidate = agent

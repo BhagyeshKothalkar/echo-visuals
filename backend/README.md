@@ -60,6 +60,8 @@ This makes Qdrant the agent's skill memory, Redis the feedback memory, and the L
 
 Skills are stored in Qdrant as reusable prompt-writing knowledge. They can be discovered with `search_skills` and persisted with `save_skill`.
 
+Each Qdrant point is a V2 skill with the typed `skill_id`, `name`, `description`, `knowledge`, `usage`, `retrieval`, and `lifecycle` payload fields. The collection uses named Cosine vectors `positive` and `negative`, built from the corresponding usage guidance. The model-facing search result contains only `name`, `description`, and `knowledge`.
+
 Feedback is stored in Redis as candidate examples associated with `Positive` or `Negative` grades. The model can retrieve examples with `get_feedback`. User feedback is recorded explicitly by the application after a candidate has been returned.
 
 The main application boundary is `GenerationResult`: it contains the final model text, tool-call statistics, and any `SkillRecord` created during the iteration. The harness uses this result to apply the deterministic save rule and produce the final `CandidatePrompt`.

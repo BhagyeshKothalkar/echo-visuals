@@ -12,11 +12,7 @@ impl Harness {
     }
 
     pub async fn run_iteration(&self, agent: &Agent) -> Result<CandidatePrompt, HarnessError> {
-        let mut result = agent.iterate().await?;
-        if result.saved_skill.is_none() && result.stats.search_skill_calls >= 2 {
-            result.saved_skill = Some(agent.save_skill(&result.text).await?);
-        }
-
+        let result = agent.iterate().await?;
         Ok(CandidatePrompt {
             id: crate::domain::stable_prompt_id(&result.text),
             text: result.text,
@@ -28,17 +24,42 @@ impl Harness {
 mod tests {
     use super::*;
     use crate::{
-        domain::{stable_prompt_id, SkillRecord},
+        domain::{stable_prompt_id, Knowledge, Lifecycle, Retrieval, SkillRecord, Usage},
         ports::{
             GenerationResult, LlmError, LlmProvider, Tool, ToolCallStats, ToolError, ToolRegistry,
         },
         prompts::{PromptAssets, RenderedPrompt},
     };
     use async_trait::async_trait;
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
+
+    fn skill(name: &str) -> SkillRecord {
+        SkillRecord {
+            skill_id: stable_prompt_id(name),
+            name: name.into(),
+            description: name.into(),
+            knowledge: Knowledge {
+                core: name.into(),
+                principles: vec![],
+                procedures: vec![],
+                failure_modes: vec![],
+                examples: vec![],
+            },
+            usage: Usage {
+                when_to_use: name.into(),
+                when_not_to_use: String::new(),
+                signals: vec![],
+                anti_signals: vec![],
+            },
+            retrieval: Retrieval { keywords: vec![] },
+            lifecycle: Lifecycle {
+                version: "2".into(),
+                status: "active".into(),
+                source: "test".into(),
+                confidence: 1.0,
+            },
+        }
+    }
 
     struct ToolStub {
         name: &'static str,
@@ -116,50 +137,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_searches_without_explicit_save_trigger_one_fallback_save() {
-        let dir = tempfile::tempdir().unwrap();
-        let assets = assets(&dir);
-        let saved = Arc::new(Mutex::new(0));
-        let saved_input = Arc::new(Mutex::new(None));
-        let save = ToolStub {
-            name: "save_skill",
-            calls: saved.clone(),
-            last_input: Some(saved_input.clone()),
-            response: serde_json::to_value(SkillRecord {
-                id: stable_prompt_id("fallback skill"),
-                text: "fallback skill".into(),
-            })
-            .unwrap(),
-        };
-        let mut tools = HashMap::new();
-        tools.insert("save_skill", Arc::new(save) as Arc<dyn Tool>);
-        let registry = Arc::new(ToolRegistry::new(tools.into_values().collect()).unwrap());
-        let agent = Agent::new(
-            "target".into(),
-            registry,
-            Arc::new(Model {
-                searches: 2,
-                saved_skill: None,
-            }),
-            assets,
-        );
-        let candidate = Harness::new().run_iteration(&agent).await.unwrap();
-        assert_eq!(*saved.lock().unwrap(), 1);
-        assert_eq!(
-            saved_input.lock().unwrap().as_ref().unwrap()["text"],
-            "candidate output"
-        );
-        assert_eq!(candidate.id, stable_prompt_id("candidate output"));
-        assert_eq!(candidate.text, "candidate output");
-    }
-
-    #[tokio::test]
     async fn explicit_saved_skill_does_not_replace_model_output_candidate() {
         let dir = tempfile::tempdir().unwrap();
         let assets = assets(&dir);
         let saved = SkillRecord {
-            id: stable_prompt_id("explicit skill"),
-            text: "explicit skill".into(),
+            ..skill("explicit skill")
         };
         let save_calls = Arc::new(Mutex::new(0));
         let save = ToolStub {
@@ -182,39 +164,6 @@ mod tests {
         let candidate = Harness::new().run_iteration(&agent).await.unwrap();
 
         assert_eq!(*save_calls.lock().unwrap(), 0);
-        assert_eq!(candidate.id, stable_prompt_id("candidate output"));
-        assert_eq!(candidate.text, "candidate output");
-    }
-
-    #[tokio::test]
-    async fn one_search_without_explicit_save_does_not_trigger_fallback() {
-        let dir = tempfile::tempdir().unwrap();
-        let assets = assets(&dir);
-        let saved = Arc::new(Mutex::new(0));
-        let save = ToolStub {
-            name: "save_skill",
-            calls: saved.clone(),
-            last_input: None,
-            response: serde_json::to_value(SkillRecord {
-                id: stable_prompt_id("fallback skill"),
-                text: "fallback skill".into(),
-            })
-            .unwrap(),
-        };
-        let registry = Arc::new(ToolRegistry::new(vec![Arc::new(save) as Arc<dyn Tool>]).unwrap());
-        let agent = Agent::new(
-            "target".into(),
-            registry,
-            Arc::new(Model {
-                searches: 1,
-                saved_skill: None,
-            }),
-            assets,
-        );
-
-        let candidate = Harness::new().run_iteration(&agent).await.unwrap();
-
-        assert_eq!(*saved.lock().unwrap(), 0);
         assert_eq!(candidate.id, stable_prompt_id("candidate output"));
         assert_eq!(candidate.text, "candidate output");
     }

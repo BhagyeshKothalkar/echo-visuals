@@ -2,6 +2,7 @@
 url = "http://localhost:6334"
 collection = "prompt_improver"
 seed = true
+embedding_dimension = 1
 
 [redis]
 url = "redis://127.0.0.1/"

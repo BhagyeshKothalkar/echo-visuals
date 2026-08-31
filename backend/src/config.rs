@@ -26,6 +26,7 @@ pub struct QdrantConfig {
     pub url: String,
     pub collection: String,
     pub seed: bool,
+    pub embedding_dimension: usize,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -61,6 +62,7 @@ impl Default for QdrantConfig {
             url: "http://localhost:6334".into(),
             collection: "prompt_improver".into(),
             seed: true,
+            embedding_dimension: 1,
         }
     }
 }
