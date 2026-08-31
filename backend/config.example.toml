@@ -2,13 +2,34 @@
 url = "http://localhost:6334"
 collection = "prompt_improver"
 seed = true
-embedding_dimension = 1
+embedding_dimension = 1024
 
 [redis]
 url = "redis://127.0.0.1/"
 key_prefix = "prompt-improver"
 
-[llm]
+[embedding]
+endpoint = "http://localhost:8080/v1/embeddings"
+model = "Qwen/Qwen3-Embedding-0.6B"
+device = "cuda"
+dimension = 1024
+batch_size = 8
+normalize = true
+
+[analyst]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+temperature = 0.2
+max_tokens = 512
+max_turns = 4
+
+[optimizer]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+temperature = 0.2
+max_tokens = 512
+
+[curator]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 temperature = 0.2
@@ -16,7 +37,7 @@ max_tokens = 512
 
 
 [prompts]
-system_path = "prompts/agents/prompt-improver-system.md"
+system_path = "prompts/agents/optimizer-system.md"
 template_path = "prompts/templates/candidate-request.md"
 
 [logging]

@@ -1,39 +1,97 @@
 use crate::{
-    domain::{CandidatePrompt, FeedbackGrade},
-    ports::{GenerationResult, LlmError, LlmProvider, ToolError, ToolRegistry},
-    prompts::PromptAssets,
+    domain::{AnalystInput, CandidatePrompt, FeedbackGrade, SkillRecord},
+    ports::{GenerationResult, LlmProvider, SkillStore, StorageError, ToolError, ToolRegistry},
 };
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error(transparent)]
     Tool(#[from] ToolError),
     #[error(transparent)]
-    Llm(#[from] LlmError),
+    Llm(#[from] crate::ports::LlmError),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("analyst selected missing skill {0}")]
+    MissingSkill(uuid::Uuid),
 }
 pub struct Agent {
     target: String,
+    image: String,
     tools: Arc<ToolRegistry>,
+    skills: Arc<dyn SkillStore>,
     llm: Arc<dyn LlmProvider>,
-    assets: PromptAssets,
 }
 impl Agent {
     pub fn new(
         target: String,
+        image: String,
         tools: Arc<ToolRegistry>,
+        skills: Arc<dyn SkillStore>,
         llm: Arc<dyn LlmProvider>,
-        assets: PromptAssets,
     ) -> Self {
         Self {
             target,
+            image,
             tools,
+            skills,
             llm,
-            assets,
         }
     }
     pub async fn iterate(&self) -> Result<GenerationResult, AgentError> {
-        let rendered = self.assets.render(&self.target);
-        Ok(self.llm.generate(&rendered, self.tools.clone()).await?)
+        let analysis = self
+            .llm
+            .analyze(
+                &AnalystInput {
+                    target: self.target.clone(),
+                    image: self.image.clone(),
+                },
+                self.tools.clone(),
+            )
+            .await?;
+        let skills = self.resolve(&analysis.relevant_skill_ids).await?;
+        let input =
+            serde_json::json!({"target":self.target,"analysis":analysis,"selected_skills":skills})
+                .to_string();
+        let optimized = self.llm.optimize(&input).await?;
+        if optimized.prompt.trim().is_empty() {
+            return Err(crate::ports::LlmError::InvalidOutput {
+                role: "optimizer".into(),
+                message: "prompt must not be empty".into(),
+            }
+            .into());
+        }
+        let saved = if optimized.save_skill {
+            let input=serde_json::json!({"target":self.target,"analysis":analysis,"prompt":optimized.prompt,"skill_reason":optimized.skill_reason,"selected_skills":skills}).to_string();
+            let skill = self.llm.curate(&input).await?;
+            skill
+                .validate()
+                .map_err(|message| crate::ports::LlmError::InvalidOutput {
+                    role: "curator".into(),
+                    message,
+                })?;
+            self.skills.save_skill(&skill).await?;
+            Some(skill)
+        } else {
+            None
+        };
+        Ok(GenerationResult {
+            text: optimized.prompt,
+            saved_skill: saved,
+        })
+    }
+    async fn resolve(&self, ids: &[uuid::Uuid]) -> Result<Vec<SkillRecord>, AgentError> {
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        for id in ids {
+            if seen.insert(*id) {
+                let skill = self.skills.get_skill(*id).await.map_err(|e| match e {
+                    StorageError::Invalid(_) => AgentError::MissingSkill(*id),
+                    other => AgentError::Storage(other),
+                })?;
+                result.push(skill)
+            }
+        }
+        Ok(result)
     }
     pub async fn grade(
         &self,
@@ -43,54 +101,35 @@ impl Agent {
         self.tools
             .call(
                 "record_feedback",
-                serde_json::json!({
-                    "id": candidate.id,
-                    "text": candidate.text,
-                    "grade": grade,
-                }),
+                serde_json::json!({"id":candidate.id,"text":candidate.text,"grade":grade}),
             )
             .await?;
         Ok(())
-    }
-
-    pub async fn save_skill(
-        &self,
-        skill: &crate::domain::SkillRecord,
-    ) -> Result<crate::domain::SkillRecord, AgentError> {
-        serde_json::from_value(
-            self.tools
-                .call("save_skill", serde_json::to_value(skill).unwrap())
-                .await?,
-        )
-        .map_err(|e| crate::ports::ToolError::Execution(anyhow::Error::new(e)).into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        domain::{stable_prompt_id, Knowledge, Lifecycle, Retrieval, SkillRecord, Usage},
-        ports::*,
-        prompts::RenderedPrompt,
-    };
+    use crate::domain::{AnalystOutput, Knowledge, Lifecycle, OptimizerOutput, Retrieval, Usage};
+    use async_trait::async_trait;
     use std::sync::Mutex;
 
-    fn skill() -> SkillRecord {
+    fn skill(id: uuid::Uuid) -> SkillRecord {
         SkillRecord {
-            skill_id: uuid::Uuid::nil(),
-            name: "candidate".into(),
-            description: "candidate".into(),
+            skill_id: id,
+            name: "reusable".into(),
+            description: "d".into(),
             knowledge: Knowledge {
-                core: "candidate".into(),
+                core: "core".into(),
                 principles: vec![],
                 procedures: vec![],
                 failure_modes: vec![],
                 examples: vec![],
             },
             usage: Usage {
-                when_to_use: "candidate".into(),
-                when_not_to_use: String::new(),
+                when_to_use: "use".into(),
+                when_not_to_use: "avoid".into(),
                 signals: vec![],
                 anti_signals: vec![],
             },
@@ -103,90 +142,125 @@ mod tests {
             },
         }
     }
-
-    struct JsonTool {
-        tool_name: &'static str,
-        calls: Mutex<Vec<serde_json::Value>>,
-        response: serde_json::Value,
+    struct Store {
+        records: Vec<SkillRecord>,
+        gets: Mutex<Vec<uuid::Uuid>>,
+        saves: Mutex<usize>,
     }
-    #[async_trait::async_trait]
-    impl Tool for JsonTool {
-        fn name(&self) -> &'static str {
-            self.tool_name
+    #[async_trait]
+    impl SkillStore for Store {
+        async fn get_skill(&self, id: uuid::Uuid) -> Result<SkillRecord, StorageError> {
+            self.gets.lock().unwrap().push(id);
+            self.records
+                .iter()
+                .find(|s| s.skill_id == id)
+                .cloned()
+                .ok_or_else(|| StorageError::Invalid("missing".into()))
         }
-        async fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-            self.calls.lock().unwrap().push(input);
-            Ok(self.response.clone())
+        async fn save_skill(&self, _: &SkillRecord) -> Result<(), StorageError> {
+            *self.saves.lock().unwrap() += 1;
+            Ok(())
         }
     }
-    struct Llm;
-    #[async_trait::async_trait]
-    impl LlmProvider for Llm {
-        async fn generate(
+    struct Model {
+        ids: Vec<uuid::Uuid>,
+        save: bool,
+        calls: Mutex<Vec<&'static str>>,
+    }
+    #[async_trait]
+    impl LlmProvider for Model {
+        async fn analyze(
             &self,
-            _: &RenderedPrompt,
+            _: &crate::domain::AnalystInput,
             _: Arc<ToolRegistry>,
-        ) -> Result<GenerationResult, LlmError> {
-            Ok(GenerationResult {
-                text: "candidate".into(),
-                ..Default::default()
+        ) -> Result<AnalystOutput, crate::ports::LlmError> {
+            self.calls.lock().unwrap().push("analyze");
+            Ok(AnalystOutput {
+                observations: vec![],
+                weaknesses: vec![],
+                requirements: vec![],
+                relevant_skill_ids: self.ids.clone(),
             })
         }
+        async fn optimize(&self, _: &str) -> Result<OptimizerOutput, crate::ports::LlmError> {
+            self.calls.lock().unwrap().push("optimize");
+            Ok(OptimizerOutput {
+                prompt: "optimized".into(),
+                save_skill: self.save,
+                skill_reason: Some("generalizable".into()),
+            })
+        }
+        async fn curate(&self, _: &str) -> Result<SkillRecord, crate::ports::LlmError> {
+            self.calls.lock().unwrap().push("curate");
+            Ok(skill(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                b"curated",
+            )))
+        }
     }
-
+    fn make(model: Arc<Model>, store: Arc<Store>) -> Agent {
+        Agent::new(
+            "target".into(),
+            "image".into(),
+            Arc::new(ToolRegistry::new(vec![]).unwrap()),
+            store,
+            model,
+        )
+    }
     #[tokio::test]
-    async fn iteration_uses_model_output_as_candidate_for_feedback() {
-        let dir = tempfile::tempdir().unwrap();
-        let system = dir.path().join("s.md");
-        let template = dir.path().join("t.md");
-        std::fs::write(&system, "system").unwrap();
-        std::fs::write(&template, "{{target}}").unwrap();
-        let assets = PromptAssets::load(&crate::config::PromptAssetConfig {
-            system_path: system.display().to_string(),
-            template_path: template.display().to_string(),
-        })
-        .unwrap();
-        let positive = Arc::new(JsonTool {
-            tool_name: "get_feedback",
-            calls: Mutex::new(vec![]),
-            response: serde_json::json!([]),
+    async fn deduplicates_and_keeps_candidate_as_optimizer_prompt() {
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"selected");
+        let store = Arc::new(Store {
+            records: vec![skill(id)],
+            gets: Mutex::new(vec![]),
+            saves: Mutex::new(0),
         });
-        let discover = Arc::new(JsonTool {
-            tool_name: "search_skills",
+        let model = Arc::new(Model {
+            ids: vec![id, id],
+            save: false,
             calls: Mutex::new(vec![]),
-            response: serde_json::json!([]),
         });
-        let insert = Arc::new(JsonTool {
-            tool_name: "save_skill",
+        let result = make(model.clone(), store.clone()).iterate().await.unwrap();
+        assert_eq!(result.text, "optimized");
+        assert_eq!(*store.gets.lock().unwrap(), vec![id]);
+        assert_eq!(*model.calls.lock().unwrap(), vec!["analyze", "optimize"]);
+    }
+    #[tokio::test]
+    async fn curator_and_save_are_conditional() {
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"selected");
+        let store = Arc::new(Store {
+            records: vec![skill(id)],
+            gets: Mutex::new(vec![]),
+            saves: Mutex::new(0),
+        });
+        let model = Arc::new(Model {
+            ids: vec![id],
+            save: true,
             calls: Mutex::new(vec![]),
-            response: serde_json::to_value(skill()).unwrap(),
         });
-        let record = Arc::new(JsonTool {
-            tool_name: "record_feedback",
-            calls: Mutex::new(vec![]),
-            response: serde_json::json!({}),
-        });
-        let tools = Arc::new(
-            ToolRegistry::new(vec![
-                positive.clone(),
-                discover.clone(),
-                insert.clone(),
-                record.clone(),
-            ])
-            .unwrap(),
+        make(model.clone(), store.clone()).iterate().await.unwrap();
+        assert_eq!(*store.saves.lock().unwrap(), 1);
+        assert_eq!(
+            *model.calls.lock().unwrap(),
+            vec!["analyze", "optimize", "curate"]
         );
-        let agent = Agent::new("target".into(), tools, Arc::new(Llm), assets);
-        let result = agent.iterate().await.unwrap();
-        assert_eq!(result.text, "candidate");
-        assert_eq!(result.stats.total_calls, 0);
-        let candidate = CandidatePrompt {
-            id: stable_prompt_id(&result.text),
-            text: result.text,
-        };
-        agent
-            .grade(&candidate, FeedbackGrade::Positive)
-            .await
-            .unwrap();
-        assert_eq!(record.calls.lock().unwrap()[0]["text"], "candidate");
+    }
+    #[tokio::test]
+    async fn missing_skill_stops_before_optimizer() {
+        let store = Arc::new(Store {
+            records: vec![],
+            gets: Mutex::new(vec![]),
+            saves: Mutex::new(0),
+        });
+        let model = Arc::new(Model {
+            ids: vec![uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"missing")],
+            save: true,
+            calls: Mutex::new(vec![]),
+        });
+        assert!(matches!(
+            make(model.clone(), store).iterate().await,
+            Err(AgentError::MissingSkill(_))
+        ));
+        assert_eq!(*model.calls.lock().unwrap(), vec!["analyze"]);
     }
 }

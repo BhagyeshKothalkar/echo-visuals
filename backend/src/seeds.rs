@@ -3,20 +3,52 @@ use crate::domain::{stable_prompt_id, Knowledge, Lifecycle, Retrieval, SkillReco
 pub fn seed_skills() -> Vec<SkillRecord> {
     [
         (
-            "Concise explanations",
-            "Write a concise technical explanation with one practical example.",
+            "Subject Composition",
+            "Compose the requested image subject with clear framing, hierarchy, perspective, and spatial balance.",
         ),
         (
-            "Rigorous editing",
-            "Act as a rigorous editor: improve clarity, structure, and factual precision.",
+            "Lighting Control",
+            "Specify and control lighting direction, quality, intensity, color temperature, and resulting shadows.",
         ),
         (
-            "Explicit assumptions",
-            "Return a helpful answer with assumptions stated explicitly and no invented facts.",
+            "Style Direction",
+            "Translate the requested visual style into concrete choices for medium, rendering approach, texture, palette, and aesthetic.",
         ),
         (
-            "Actionable analysis",
-            "Analyze the request, identify constraints, and propose an actionable solution.",
+            "Photorealistic Rendering",
+            "Improve image prompts for realistic materials, natural lighting, believable proportions, and photographic detail.",
+        ),
+        (
+            "Camera Control",
+            "Specify camera position, lens characteristics, focal length, depth of field, focus, and framing.",
+        ),
+        (
+            "Image Inpainting",
+            "Edit a localized region of an image while preserving surrounding context, geometry, lighting, and visual consistency.",
+        ),
+        (
+            "Object Removal",
+            "Remove an unwanted object from an image and reconstruct the affected region so it blends naturally with the surrounding scene.",
+        ),
+        (
+            "Object Replacement",
+            "Replace a specific object while preserving the original scene composition, lighting, perspective, and environmental context.",
+        ),
+        (
+            "Background Replacement",
+            "Replace or redesign the image background while maintaining subject identity, edges, lighting, and scene integration.",
+        ),
+        (
+            "Pose and Structure Editing",
+            "Modify the pose, anatomy, orientation, or spatial arrangement of a subject while preserving identity and overall visual coherence.",
+        ),
+        (
+            "Image Expansion",
+            "Extend an image beyond its original boundaries while generating contextually consistent content that matches composition, perspective, and style.",
+        ),
+        (
+            "Detail Enhancement",
+            "Increase useful visual detail and local fidelity without introducing artifacts, unwanted objects, or inconsistent textures.",
         ),
     ]
     .into_iter()
@@ -32,13 +64,17 @@ pub fn seed_skills() -> Vec<SkillRecord> {
             examples: vec![],
         },
         usage: Usage {
-            when_to_use: "When improving a response".into(),
+            when_to_use: "When generating or editing images".into(),
             when_not_to_use: String::new(),
-            signals: vec!["improve".into()],
+            signals: vec!["image".into(), "generate".into(), "edit".into()],
             anti_signals: vec![],
         },
         retrieval: Retrieval {
-            keywords: vec!["prompt".into(), "response".into()],
+            keywords: vec![
+                "image".into(),
+                "generation".into(),
+                "editing".into(),
+            ],
         },
         lifecycle: Lifecycle {
             version: "2.0".into(),

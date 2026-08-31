@@ -16,7 +16,10 @@ pub enum ConfigError {
 pub struct Config {
     pub qdrant: QdrantConfig,
     pub redis: RedisConfig,
-    pub llm: LlmConfig,
+    pub embedding: EmbeddingConfig,
+    pub analyst: VlmConfig,
+    pub optimizer: LlmConfig,
+    pub curator: LlmConfig,
     pub prompts: PromptAssetConfig,
     pub logging: LoggingConfig,
 }
@@ -46,6 +49,26 @@ pub struct LlmConfig {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
+pub struct EmbeddingConfig {
+    pub endpoint: String,
+    pub model: String,
+    pub device: String,
+    pub dimension: usize,
+    pub batch_size: usize,
+    pub normalize: bool,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct VlmConfig {
+    pub base_url: String,
+    pub model: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    pub api_key: Option<String>,
+    pub max_turns: usize,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
 pub struct PromptAssetConfig {
     pub system_path: String,
     pub template_path: String,
@@ -62,7 +85,7 @@ impl Default for QdrantConfig {
             url: "http://localhost:6334".into(),
             collection: "prompt_improver".into(),
             seed: true,
-            embedding_dimension: 1,
+            embedding_dimension: 1024,
         }
     }
 }
@@ -83,6 +106,30 @@ impl Default for LlmConfig {
             max_tokens: 512,
             api_key: None,
             organization: None,
+        }
+    }
+}
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: "http://localhost:8080/v1/embeddings".into(),
+            model: "Qwen/Qwen3-Embedding-0.6B".into(),
+            device: "cuda".into(),
+            dimension: 1024,
+            batch_size: 8,
+            normalize: true,
+        }
+    }
+}
+impl Default for VlmConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            temperature: 0.2,
+            max_tokens: 512,
+            api_key: None,
+            max_turns: 4,
         }
     }
 }
@@ -111,15 +158,28 @@ impl Config {
             let file: Config = toml::from_str(&raw).map_err(ConfigError::Parse)?;
             config = file;
         }
-        config.llm.api_key = std::env::var("LLM_API_KEY").ok().or(config.llm.api_key);
-        config.llm.organization = std::env::var("LLM_ORGANIZATION")
-            .ok()
-            .or(config.llm.organization);
+        let key = std::env::var("LLM_API_KEY").ok();
+        config.optimizer.api_key = key.clone().or(config.optimizer.api_key);
+        config.curator.api_key = key.clone().or(config.curator.api_key);
+        config.analyst.api_key = key.or(config.analyst.api_key);
         config.validate()?;
         Ok(config)
     }
     fn validate(&self) -> Result<(), ConfigError> {
-        if !(0.0..=2.0).contains(&self.llm.temperature) {
+        if self.qdrant.embedding_dimension != self.embedding.dimension {
+            return Err(ConfigError::Invalid(
+                "qdrant.embedding_dimension must equal embedding.dimension".into(),
+            ));
+        }
+        if self.embedding.dimension == 0 || self.embedding.batch_size == 0 {
+            return Err(ConfigError::Invalid(
+                "embedding dimension and batch_size must be positive".into(),
+            ));
+        }
+        if !(0.0..=2.0).contains(&self.optimizer.temperature)
+            || !(0.0..=2.0).contains(&self.curator.temperature)
+            || !(0.0..=2.0).contains(&self.analyst.temperature)
+        {
             return Err(ConfigError::Invalid(
                 "temperature must be between 0 and 2".into(),
             ));
@@ -135,8 +195,8 @@ mod tests {
     #[test]
     fn toml_overrides_defaults() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "[llm]\nmodel = 'local-model'").unwrap();
+        writeln!(f, "[optimizer]\nmodel = 'local-model'").unwrap();
         let c = Config::from_sources(Some(f.path())).unwrap();
-        assert_eq!(c.llm.model, "local-model");
+        assert_eq!(c.optimizer.model, "local-model");
     }
 }

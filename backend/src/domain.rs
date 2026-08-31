@@ -3,6 +3,12 @@ use uuid::Uuid;
 
 pub type PromptId = Uuid;
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalystInput {
+    pub target: String,
+    pub image: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkillRecord {
     pub skill_id: PromptId,
@@ -46,12 +52,25 @@ pub struct Lifecycle {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkillProjection {
+    pub skill_id: PromptId,
     pub name: String,
     pub description: String,
     pub knowledge: Knowledge,
 }
 
 impl SkillRecord {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.skill_id.is_nil() {
+            return Err("skill_id must not be nil".into());
+        }
+        if self.name.trim().is_empty() || self.description.trim().is_empty() {
+            return Err("name and description must not be empty".into());
+        }
+        if self.knowledge.core.trim().is_empty() {
+            return Err("knowledge.core must not be empty".into());
+        }
+        Ok(())
+    }
     pub fn positive_vector_source(&self) -> String {
         vector_source(&self.usage.when_to_use, &self.usage.signals)
     }
@@ -62,11 +81,27 @@ impl SkillRecord {
 
     pub fn model_projection(&self) -> SkillProjection {
         SkillProjection {
+            skill_id: self.skill_id,
             name: self.name.clone(),
             description: self.description.clone(),
             knowledge: self.knowledge.clone(),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnalystOutput {
+    pub observations: Vec<String>,
+    pub weaknesses: Vec<String>,
+    pub requirements: Vec<String>,
+    pub relevant_skill_ids: Vec<PromptId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OptimizerOutput {
+    pub prompt: String,
+    pub save_skill: bool,
+    pub skill_reason: Option<String>,
 }
 
 fn vector_source(context: &str, signals: &[String]) -> String {
@@ -165,11 +200,28 @@ mod v2_tests {
     #[test]
     fn model_projection_exposes_only_name_description_and_knowledge() {
         let value = serde_json::to_value(record().model_projection()).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 3);
+        assert_eq!(value.as_object().unwrap().len(), 4);
         assert!(value.get("name").is_some());
         assert!(value.get("description").is_some());
         assert!(value.get("knowledge").is_some());
         assert!(value.get("usage").is_none());
         assert!(value.get("lifecycle").is_none());
+    }
+
+    #[test]
+    fn analyst_and_optimizer_contracts_reject_missing_required_fields() {
+        assert!(serde_json::from_value::<AnalystOutput>(serde_json::json!({})).is_err());
+        assert!(
+            serde_json::from_value::<OptimizerOutput>(serde_json::json!({"prompt":"x"})).is_err()
+        );
+    }
+
+    #[test]
+    fn curated_skills_require_canonical_nonempty_identity_and_knowledge() {
+        let mut skill = record();
+        skill.skill_id = Uuid::nil();
+        assert!(skill.validate().is_err());
+        skill.skill_id = Uuid::new_v5(&Uuid::NAMESPACE_URL, b"valid");
+        assert!(skill.validate().is_ok());
     }
 }

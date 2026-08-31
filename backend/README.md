@@ -1,80 +1,25 @@
-# Agentic Prompt Improver
+# Echo Visuals V2
 
-Rust MVP for improving an image-generation prompt with an agentic LLM, Qdrant skill memory, and Redis feedback memory.
-
-The system is deliberately tool-driven: the model is not given retrieved skills or feedback up front. It receives the target prompt and a system prompt explaining its job and tools, then decides what context it needs during generation.
-
-## How the system works
+This service improves an image-generation target in one bounded pass:
 
 ```text
-Target image-generation prompt
-              |
-              v
-      +-------------------+
-      |    Rig agent      |
-      |  system prompt   |
-      +-------------------+
-          |       |       |
-          |       |       |
-          v       v       v
-   search_skills  get_feedback  save_skill
-          |       |       |
-          v       v       v
-       Qdrant    Redis     Qdrant
-          |       |       |
-          +--- tool results ---+
-                    |
-                    v
-                   LLM
-                    |
-                    v
-            final candidate prompt
-                    |
-                    v
-       search count >= 2 and not saved?
-                /          \
-              yes           no
-               |             |
-               v             v
-        deterministic      keep model
-             save           result
-               |
-               v
-          SkillRecord
-               |
-               v
-        CandidatePrompt
+target + image → Analyst (VLM) → skill IDs → Rust lookup → Optimizer (LLM) → optional Curator (LLM)
 ```
 
-Each iteration starts with only the target image-generation prompt. `PromptAssets` loads the editable system prompt and user template from Markdown files and renders the target into the user message.
+The Analyst owns observations, weaknesses, requirements, skill retrieval, and feedback retrieval. It may call only `search_skills` and `get_feedback`, and returns IDs rather than embedding stored records. Rust deduplicates those IDs in order and resolves each record directly from Qdrant. A missing ID stops the pass before optimization.
 
-The Rig agent then controls retrieval. `search_skills` queries Qdrant for reusable prompt-writing skills. `get_feedback` retrieves positive or negative examples previously recorded in Redis. Their results are returned to the model as tool observations, so the model can decide whether to retrieve again, change its approach, or finish.
+The Optimizer always produces the candidate prompt and decides whether knowledge is reusable enough to save. The Curator runs only for that decision, emits one canonical V2 `SkillRecord`, and Rust validates and saves it through Qdrant. The candidate is always the optimizer prompt with `stable_prompt_id(prompt)`; a saved skill is supporting knowledge, never the candidate.
 
-`save_skill` lets the model explicitly persist a useful reusable skill in Qdrant. When that happens, the resulting `SkillRecord` is captured and propagated out of the generation step.
+There are exactly two model generations without saving and three when saving. No critic, generator loop, retry, fallback save, or recursive orchestration is used. Redis remains feedback memory: the application records feedback from the CLI, while only the Analyst can retrieve it.
 
-There is also a deterministic learning rule. If the model performs at least two `search_skills` calls during an iteration and did not explicitly save a skill, the harness saves the final model output as a skill. The returned `SkillRecord` becomes the candidate used by the rest of the application. With fewer than two searches and no explicit save, the model output itself is the candidate and its ID is derived deterministically from the text.
+Run the unchanged CLI commands:
 
-This makes Qdrant the agent's skill memory, Redis the feedback memory, and the LLM the reasoning and control layer. Retrieval is therefore dynamic rather than a separate RAG preprocessing stage.
+```bash
+cargo run -- init
+cargo run -- run --target "..." --image ./image.png
+cargo run -- interactive --target "..." --image ./image.png
+```
 
-## Data lifecycle
+Embedding inference is local and configured in `[embedding]`; the default is `Qwen/Qwen3-Embedding-0.6B` at 1024 dimensions on CUDA through an OpenAI-compatible embeddings endpoint. `[analyst]`, `[optimizer]`, and `[curator]` configure the three roles independently. The Analyst receives the target and image and may use only `search_skills` and `get_feedback`; the optimizer and optional curator remain text roles.
 
-Skills are stored in Qdrant as reusable prompt-writing knowledge. They can be discovered with `search_skills` and persisted with `save_skill`.
-
-Each Qdrant point is a V2 skill with the typed `skill_id`, `name`, `description`, `knowledge`, `usage`, `retrieval`, and `lifecycle` payload fields. The collection uses named Cosine vectors `positive` and `negative`, built from the corresponding usage guidance. The model-facing search result contains only `name`, `description`, and `knowledge`.
-
-Feedback is stored in Redis as candidate examples associated with `Positive` or `Negative` grades. The model can retrieve examples with `get_feedback`. User feedback is recorded explicitly by the application after a candidate has been returned.
-
-The main application boundary is `GenerationResult`: it contains the final model text, tool-call statistics, and any `SkillRecord` created during the iteration. The harness uses this result to apply the deterministic save rule and produce the final `CandidatePrompt`.
-
-## Run
-
-1. Start services: `docker compose up -d`.
-2. Copy `config.example.toml` to `config.toml` and edit public settings.
-3. Copy `.env.example` to `.env` and set `LLM_API_KEY`.
-4. Seed Qdrant: `cargo run -- init` (safe to repeat).
-5. Generate once: `cargo run -- run --target "Write a clear project plan"`.
-6. Iterate with feedback: `cargo run -- interactive --target "Write a clear project plan"`.
-
-The configuration file controls service URLs, model settings, logging, and prompt paths without recompiling. Credentials are environment-only. Prompt behavior is editable in `prompts/agents/` and `prompts/templates/` Markdown files.
-
-Tests use in-memory logic and do not require Docker or an API key: `cargo test`.
+Role instructions are in `prompts/agents/analyst-system.md`, `optimizer-system.md`, and `curator-system.md`. Typed serde contracts are authoritative for role output.
